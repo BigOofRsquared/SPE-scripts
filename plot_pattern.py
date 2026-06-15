@@ -5,72 +5,89 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def main():
-    # 1. CONTROLLO PARAMETRI DI CHIAMATA
     if len(sys.argv) < 2:
-        print("\n[ERRORE] Devi passare almeno un file o un pattern da plottare!")
-        print("Uso corretto:")
-        print("  python plot_spectra.py <file1.csv> <file2.csv>")
-        print("  python plot_spectra.py *.csv")
-        print("  python plot_spectra.py EXPORT_Quarzo_*.csv\n")
+        print("\nUso dello script:")
+        print("  Di default (cm-1):  python plot_pattern.py *.csv")
+        print("  Per i Nanometri:    python plot_pattern.py -w *.csv")
+        print("  Per i Pixel (Bin):  python plot_pattern.py -b *.csv")
+        print("  Mostrare la legenda:python plot_pattern.py -l *.csv")
+        print("  Escludere i RAW:    python plot_pattern.py -r *.csv\n")
         sys.exit(1)
 
-    # 2. ESPANSIONE DEI CARATTERI JOLLY (*)
-    # Prendiamo tutti gli argomenti passati da terminale e li espandiamo con glob
-    input_arguments = sys.argv[1:]
-    files_to_plot = []
-    
-    for arg in input_arguments:
-        # glob.glob risolve i vari asterischi cercando i file reali sul disco
-        matched_files = glob.glob(arg)
-        for f in matched_files:
-            if os.path.isfile(f) and f.lower().endswith('.csv'):
-                files_to_plot.append(f)
+    # Prendiamo la lista grezza degli argomenti
+    argomenti = sys.argv[1:]
 
-    # Rimuoviamo eventuali duplicati mantenendo l'ordine
+    # 1. GESTIONE FLAG: Ora show_legend diventa True SOLO se passi -l
+    exclude_raw = '-r' in argomenti
+    show_legend = '-l' in argomenti  # <-- CORRETTO: Attiva SOLO se presente!
+
+    if '-w' in argomenti:
+        x_column = 'Wavelength (nm)'
+    elif '-b' in argomenti:
+        x_column = 'Bin'
+    else:
+        x_column = 'Relative Wavenumber (cm-1)'
+
+    # 2. PULIZIA ARGOMENTI: Rimuoviamo i flag letterali
+    file_args = [arg for arg in argomenti if arg not in ['-w', '-b', '-l', '-r']]
+
+    # 3. RACCOLTA FILE
+    files_to_plot = []
+    for item in file_args:
+        item_pulito = item.replace('"', '').strip()
+        
+        espanse = glob.glob(item_pulito)
+        if not espanse and os.path.isfile(item_pulito):
+            espanse = [item_pulito]
+            
+        for f in espanse:
+            if f.lower().endswith('.csv'):
+                if exclude_raw and "-raw" in os.path.basename(f).lower():
+                    continue
+                files_to_plot.append(os.path.abspath(f))
+
+    # Rimuove i duplicati mantenendo l'ordine
     files_to_plot = list(dict.fromkeys(files_to_plot))
 
     if not files_to_plot:
-        print("\n[ERRORE] Nessun file CSV valido trovato con i parametri passati.")
+        print("[ERRORE] Nessun file CSV valido trovato. Controlla il path o i flag.")
         sys.exit(1)
 
-    print(f"Trovati {len(files_to_plot)} file da plottare. Caricamento in corso...")
+    # Banner di log iniziale
+    print("\n" + "="*60)
+    print(f" AVVIO PLOT: '{x_column}' (Asse X) vs 'Intensity' (Asse Y)")
+    print(f" File totali da elaborare: {len(files_to_plot)}")
+    print(f" Esclusione file RAW: {exclude_raw}")
+    print(f" Legenda visibile: {show_legend}")
+    print("="*60 + "\n")
 
-    # 3. CREAZIONE DEL PLOT
-    plt.figure(figsize=(10, 6))
+    cmap = plt.get_cmap('rainbow')
+    plt.figure(figsize=(12, 7))
 
-    for file_path in files_to_plot:
+    for idx, file_path in enumerate(files_to_plot):
         file_name = os.path.basename(file_path)
         try:
-            # Leggiamo il file impostando lo SPAZIO come separatore (sep=' ')
             df = pd.read_csv(file_path, sep=' ')
+            df.columns = df.columns.str.replace('"', '').str.strip()
             
-            # Verifichiamo che le colonne necessarie esistano
-            if 'Relative Wavenumber (cm-1)' in df.columns and 'Intensity' in df.columns:
-                x = df['Relative Wavenumber (cm-1)']
-                y = df['Intensity']
-                
-                # Plottiamo lo spettro usando il nome del file come etichetta in legenda
-                plt.plot(x, y, label=file_name, alpha=0.8)
-            else:
-                print(f"   [SALTATO] {file_name} non ha le colonne corrette.")
+            plt.plot(df[x_column], df['Intensity'], label=file_name, color=cmap((idx / len(files_to_plot)), alpha=0.85))
+        except KeyError:
+            print(f"   [SALTATO] {file_name} non ha la colonna '{x_column}'")
         except Exception as e:
-            print(f"   [ERRORE] Impossibile leggere {file_name}: {e}")
+            print(f"   [ERRORE] Errore su {file_name}: {e}")
 
-    # 4. CONFIGURAZIONE ESTETICA DEL GRAFICO
-    plt.title("Spettri Raman", fontsize=14, fontweight='bold')
-    plt.xlabel("Raman Shift (cm$^{-1}$)", fontsize=12)
+    # Estetica del grafico
+    label_grafico_x = "Raman Shift (cm$^{-1}$)" if x_column == 'Relative Wavenumber (cm-1)' else x_column
+    plt.title(f"Spettri Raman ({x_column} vs Intensity)", fontsize=14, fontweight='bold')
+    plt.xlabel(label_grafico_x, fontsize=12)
     plt.ylabel("Intensity (counts)", fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.5)
     
-    # Mostra la legenda solo se non ci sono troppi file (altrimenti copre tutto)
-    if len(files_to_plot) <= 20:
-        plt.legend(loc='best', fontsize=9)
-    else:
-        print("[INFO] Troppi file da visualizzare in legenda (>20), visualizzazione legenda disattivata.")
-
-    plt.tight_layout()
+    # Mostra la legenda solo se hai esplicitamente digitato -l
+    if show_legend:
+        plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8, borderaxespad=0.)
     
-    print("Visualizzazione grafico... Chiudi la finestra del grafico per terminare lo script.")
+    plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
