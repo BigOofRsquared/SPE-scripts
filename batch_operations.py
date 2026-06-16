@@ -7,45 +7,55 @@ from scipy.interpolate import interp1d
 
 def main():
     if len(sys.argv) < 2:
-        print("\nUso dello script Batch Operations (4-in-1):")
-        print("  python batch_operations.py -s <pattern_samples> [operazione] <singolo_file> [opzioni_finestra]")
+        print("\nUso dello script Batch Operations (5-in-1):")
+        print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro>")
         print("\nOperazioni disponibili (sceglierne una):")
         print("  -sub <file_back>       Sottrazione -> OUT: sample_MINUS_back.csv")
         print("  -m   <file_molt>       Moltiplicazione pura -> OUT: sample_TIMES_molt.csv")
         print("  -f   <file_filtro>     Filtro con interpolazione -> OUT: sample_FILTERED_BY_filtro.csv")
         print("  -res <file_rif>        Riscalamento locale -> OUT: sample_RESCALED_TO_rif.csv")
+        print("  -sm  <valore_scalare>  Moltiplicazione per uno scalare -> OUT: sample_TIMES_SCALAR_valore.csv")
         print("\nOpzioni Finestra (Obbligatorie SOLO per il riscalamento -res, sceglierne una):")
         print("  -w <min> <max>         Intervallo in Wavelength (nm)")
         print("  -rwn <min> <max>       Intervallo in Relative Wavenumber (cm-1)")
         print("  -b <min> <max>         Intervallo in Bin (pixel)")
         print("\nEsempi:")
         print("  python batch_operations.py -s 10V/EXPORT*.csv -sub background.csv")
-        print("  python batch_operations.py -s fluo*.csv -res sample.csv -w 640 650\n")
+        print("  python batch_operations.py -s *.csv -sm 2.5\n")
         sys.exit(1)
 
     argomenti = sys.argv[1:]
 
-    # 1. PARSING DELL'OPERAZIONE E DEL SECONDO FILE
-    mode = None  # 'sub', 'm', 'f', o 'res'
-    second_file_path = None
+    # 1. PARSING DELL'OPERAZIONE E DEL PARAMETRO (FILE O SCALARE)
+    mode = None  # 'sub', 'm', 'f', 'res', o 'sm'
+    second_param = None
 
-    for flag, m_type in [('-sub', 'sub'), ('-m', 'm'), ('-f', 'f'), ('-res', 'res')]:
+    for flag, m_type in [('-sub', 'sub'), ('-m', 'm'), ('-f', 'f'), ('-res', 'res'), ('-sm', 'sm')]:
         if flag in argomenti:
             if mode is not None:
-                print("[ERRORE] Puoi specificare una sola operazione alla volta tra -sub, -m, -f, -res.")
+                print("[ERRORE] Puoi specificare una sola operazione alla volta tra -sub, -m, -f, -res, -sm.")
                 sys.exit(1)
             mode = m_type
             idx = argomenti.index(flag)
             if idx + 1 < len(argomenti):
-                second_file_path = argomenti[idx + 1].replace('"', '').strip()
+                second_param = argomenti[idx + 1].replace('"', '').strip()
 
-    if not mode or not second_file_path:
-        print("[ERRORE] Devi specificare un'operazione valida (-sub, -m, -f, -res) seguita dal relativo file.")
+    if not mode or not second_param:
+        print("[ERRORE] Devi specificare un'operazione valida (-sub, -m, -f, -res, -sm) seguita dal relativo parametro.")
         sys.exit(1)
 
-    if not os.path.isfile(second_file_path):
-        print(f"[ERRORE] Il file operatore specificato non esiste: {second_file_path}")
-        sys.exit(1)
+    # Validazione specifica in base al tipo di operazione
+    scalar_value = None
+    if mode == 'sm':
+        try:
+            scalar_value = float(second_param)
+        except ValueError:
+            print(f"[ERRORE] La modalità -sm richiede un valore numerico valido. Ricevuto: '{second_param}'")
+            sys.exit(1)
+    else:
+        if not os.path.isfile(second_param):
+            print(f"[ERRORE] Il file operatore specificato non esiste: {second_param}")
+            sys.exit(1)
 
     # 2. PARSING DELLA FINESTRA DI INTEGRAZIONE (SOLO SE IN MODALITÀ -res)
     window_type = None
@@ -75,7 +85,7 @@ def main():
         idx_s = argomenti.index('-s')
         # Raccogliamo i sample fermandoci se becchiamo altre flag operative o di finestra
         for arg in argomenti[idx_s + 1:]:
-            if arg in ['-sub', '-m', '-f', '-res', '-w', '-rwn', '-b', second_file_path]:
+            if arg in ['-sub', '-m', '-f', '-res', '-sm', '-w', '-rwn', '-b', second_param]:
                 break
             sample_patterns.append(arg)
     else:
@@ -96,39 +106,46 @@ def main():
     # Rimozione duplicati mantenendo l'ordine
     files_sample = list(dict.fromkeys(files_sample))
 
-    # Escludiamo l'operatore/riferimento dalla lista dei sample se cade nel pattern *
-    abs_second_file = os.path.abspath(second_file_path)
-    if abs_second_file in files_sample:
-        files_sample.remove(abs_second_file)
+    # Escludiamo l'operatore dalla lista dei sample se non siamo in modalità scalare ed è caduto nel pattern *
+    if mode != 'sm':
+        abs_second_file = os.path.abspath(second_param)
+        if abs_second_file in files_sample:
+            files_sample.remove(abs_second_file)
 
     if not files_sample:
         print("[ERRORE] Nessun file di sample valido trovato con il pattern fornito.")
         sys.exit(1)
 
-    # 4. CARICAMENTO DEL FILE OPERATORE / RIFERIMENTO
+    # 4. CARICAMENTO E PRE-CALCOLI DEL FILE OPERATORE (SE NON SIAMO IN MODALITÀ SCALARE)
     colonne_obbligatorie = ['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)', 'Intensity']
-    try:
-        df_2 = pd.read_csv(second_file_path, sep=' ')
-        df_2.columns = df_2.columns.str.replace('"', '').str.strip()
-        if not all(col in df_2.columns for col in colonne_obbligatorie):
-            print(f"[ABORT] Il file {os.path.basename(second_file_path)} non ha le colonne standard.")
+    df_2 = None
+    
+    if mode != 'sm':
+        try:
+            df_2 = pd.read_csv(second_param, sep=' ')
+            df_2.columns = df_2.columns.str.replace('"', '').str.strip()
+            if not all(col in df_2.columns for col in colonne_obbligatorie):
+                print(f"[ABORT] Il file {os.path.basename(second_param)} non ha le colonne standard.")
+                sys.exit(1)
+        except Exception as e:
+            print(f"[ERRORE] Impossibile leggere il file operatore/riferimento: {e}")
             sys.exit(1)
-    except Exception as e:
-        print(f"[ERRORE] Impossibile leggere il file operatore/riferimento: {e}")
-        sys.exit(1)
-
-    second_name_no_ext = os.path.splitext(os.path.basename(second_file_path))[0]
+        second_name_no_ext = os.path.splitext(os.path.basename(second_param))[0]
 
     print("\n" + "="*60)
-    print(f" AVVIO ELABORAZIONE BATCH (4-in-1)")
+    print(f" AVVIO ELABORAZIONE BATCH (5-in-1)")
     print(f" Modalità Operativa:   {mode.upper()}")
-    print(f" File Operatore/Rif:   {os.path.basename(second_file_path)}")
+    if mode == 'sm':
+        print(f" Scalare impostato:    {scalar_value}")
+    else:
+        print(f" File Operatore/Rif:   {os.path.basename(second_param)}")
+        
     if mode == 'res':
         print(f" Finestra Scelta:      -{window_type} [{w_min} : {w_max}]")
     print(f" File Sample Trovati:  {len(files_sample)}")
     print("="*60 + "\n")
 
-    # PRE-CALCOLI SPECIFICI PER LE MODALITÀ
+    # PRE-CALCOLI SPECIFICI PER LE MODALITÀ CON FILE
     if mode == 'f':
         f_min_nm = df_2['Wavelength (nm)'].min()
         f_max_nm = df_2['Wavelength (nm)'].max()
@@ -140,7 +157,6 @@ def main():
             fill_value="extrapolate"
         )
     elif mode == 'res':
-        # Prepariamo la maschera booleana sul file di riferimento per il calcolo della somma locale
         if window_type == 'w':
             mask_ref = (df_2['Wavelength (nm)'] >= w_min) & (df_2['Wavelength (nm)'] <= w_max)
         elif window_type == 'rwn':
@@ -167,8 +183,14 @@ def main():
                 print(f"   [SALTATO] {sample_full_name} non ha colonne standard.")
                 continue
 
-            # LOGICHE DI COMPATIBILITÀ ASSI E CALCOLO A QUADRIVIO
-            if mode in ['sub', 'm', 'res']:
+            # Logica ad albero in base al mode
+            if mode == 'sm':
+                # Moltiplicazione scalare: nessuna dipendenza da altri file, asse X ereditato liscio
+                df_output = df_s.copy()
+                df_output['Intensity'] = df_s['Intensity'].values * scalar_value
+                suffix = f"_TIMES_SCALAR_{second_param}.csv"
+                
+            elif mode in ['sub', 'm', 'res']:
                 # Controllo compatibilità geometrica assi X rigidissimo
                 if len(df_s) != len(df_2):
                     print(f"   [SALTATO] {sample_full_name} ha lunghezza diversa rispetto alla reference ({len(df_s)} vs {len(df_2)})")
@@ -191,7 +213,6 @@ def main():
                     df_output['Intensity'] = df_s['Intensity'].values * df_2['Intensity'].values
                     suffix = f"_TIMES_{second_name_no_ext}.csv"
                 elif mode == 'res':
-                    # Logica di riscalamento locale
                     somma_s = df_s[mask_ref]['Intensity'].sum()
                     if somma_s == 0:
                         print(f"   [SALTATO] {sample_full_name} ha somma dell'intensità pari a ZERO nella finestra.")
@@ -201,7 +222,6 @@ def main():
                     suffix = f"_RESCALED_TO_{second_name_no_ext}.csv"
 
             elif mode == 'f':
-                # Logica Filtro con ritaglio dinamico e interpolazione SciPy
                 df_s_clipped = df_s[
                     (df_s['Wavelength (nm)'] >= f_min_nm - 1e-5) & 
                     (df_s['Wavelength (nm)'] <= f_max_nm + 1e-5)
@@ -218,7 +238,7 @@ def main():
                 df_output['Intensity'] = df_s_clipped['Intensity'].values * intensita_filtro_interpolata
                 suffix = f"_FILTERED_BY_{second_name_no_ext}.csv"
 
-            # 6. SALVATAGGIO AUTOMATICO NELLA STESSA CARTELLA DEL FILE SORGENTE
+            # 6. SALVATAGGIO AUTOMATICO
             output_filename = f"{sample_name_no_ext}{suffix}"
             output_path = os.path.join(dir_name, output_filename)
             df_output.to_csv(output_path, sep=' ', index=False)
