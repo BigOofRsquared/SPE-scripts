@@ -1,6 +1,7 @@
 import sys
 import os
 import glob
+import csv
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
@@ -24,17 +25,18 @@ def find_common_prefix(strings):
 
 def main():
     if len(sys.argv) < 2:
-        print("\nUso dello script Batch Operations (7-in-1):")
+        print("\nUso dello script Batch Operations (8-in-1):")
         print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro/file> [opzioni]")
         print("\nOperazioni disponibili (sceglierne una):")
-        print("  -sub <file_back>       Sottrazione -> OUT: sample_MINUS_back.csv")
-        print("  -m   <file_molt>       Moltiplicazione pura -> OUT: sample_TIMES_molt.csv")
-        print("  -f   <file_filtro>     Filtro con interpolazione -> OUT: sample_FILTERED_BY_filtro.csv")
-        print("  -res <file_rif>        Riscalamento locale -> OUT: sample_RESCALED_TO_rif.csv")
-        print("  -sm  <valore_scalare>  Moltiplicazione per uno scalare -> OUT: sample_TIMES_SCALAR_valore.csv")
+        print("  -base <file_back>      Riscalamento locale + Sottrazione automatica su finestra -> OUT: sample_BASE_CORRECTED_BY_back.csv")
+        print("  -sub  <file_back>      Sottrazione pura -> OUT: sample_MINUS_back.csv")
+        print("  -m    <file_molt>      Moltiplicazione pura -> OUT: sample_TIMES_molt.csv")
+        print("  -f    <file_filtro>    Filtro con interpolazione -> OUT: sample_FILTERED_BY_filtro.csv")
+        print("  -res  <file_rif>       Riscalamento locale puro -> OUT: sample_RESCALED_TO_rif.csv")
+        print("  -sm   <valore_scalare> Moltiplicazione per uno scalare -> OUT: sample_TIMES_SCALAR_valore.csv")
         print("  -avg                   Mediazione spettri -> OUT: nomecomune_AVG.csv")
         print("  -norm                  Normalizzazione intensità (Media ad 1.0) -> OUT: NORM_sample.csv")
-        print("\nOpzioni Finestra (Obbligatorie SOLO per il riscalamento -res, sceglierne una):")
+        print("\nOpzioni Finestra (Obbligatorie per -res e -base, sceglierne una):")
         print("  -w <min> <max>         Intervallo in Wavelength (nm)")
         print("  -rwn <min> <max>       Intervallo in Relative Wavenumber (cm-1)")
         print("  -b <min> <max>         Intervallo in Bin (pixel)")
@@ -46,7 +48,6 @@ def main():
 
     argomenti = sys.argv[1:]
 
-    # Dizionario globale per tracciare tutti i file saltati dell'intera esecuzione [NomeFile: Motivo]
     file_saltati = {}
     file_elaborati_count = 0
 
@@ -58,7 +59,11 @@ def main():
     mode = None  
     second_param = None
 
-    operazioni_lista = [('-sub', 'sub'), ('-m', 'm'), ('-f', 'f'), ('-res', 'res'), ('-sm', 'sm'), ('-avg', 'avg'), ('-norm', 'norm')]
+    operazioni_lista = [
+        ('-base', 'base'), ('-sub', 'sub'), ('-m', 'm'), 
+        ('-f', 'f'), ('-res', 'res'), ('-sm', 'sm'), 
+        ('-avg', 'avg'), ('-norm', 'norm')
+    ]
     for flag, m_type in operazioni_lista:
         if flag in argomenti:
             if mode is not None:
@@ -98,7 +103,7 @@ def main():
             if custom_output_dir:
                 os.makedirs(custom_output_dir, exist_ok=True)
 
-    # 4. PARSING DELLA FINESTRA DI INTEGRAZIONE (SOLO SE IN MODALITÀ -res)
+    # 4. PARSING DELLA FINESTRA DI INTEGRAZIONE (OBBLIGATORIA PER -res E -base)
     window_type = None
     w_min, w_max = None, None
 
@@ -116,8 +121,8 @@ def main():
                 print(f"[ERRORE] La flag {flag} richiede due valori numerici (min e max).")
                 sys.exit(1)
 
-    if mode == 'res' and not window_type:
-        print("[ERRORE] La modalita riscalamento (-res) richiede obbligatoriamente un intervallo (-w, -rwn o -b).")
+    if mode in ['res', 'base'] and not window_type:
+        print(f"[ERRORE] La modalita {flag} richiede obbligatoriamente una finestra di ancoraggio (-w, -rwn o -b).")
         sys.exit(1)
 
     # 5. PARSING DEI FILE DI SAMPLE (-s)
@@ -125,7 +130,7 @@ def main():
     if '-s' in argomenti:
         idx_s = argomenti.index('-s')
         for arg in argomenti[idx_s + 1:]:
-            stop_conditions = ['-sub', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', '--relax', custom_output_dir]
+            stop_conditions = ['-base', '-sub', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', '--relax', custom_output_dir]
             if second_param:
                 stop_conditions.append(second_param)
             if arg in stop_conditions:
@@ -146,13 +151,11 @@ def main():
             if f.lower().endswith('.csv'):
                 base_name = os.path.basename(f)
                 
-                # CONTROLLO SELETTIVO: Salta solo se contiene espressamente "-raw"
                 if exclude_raw and "-raw" in base_name.lower():
                     motivo = "Escluso tramite flag --raw"
                     file_saltati[base_name] = motivo
                     print(f"   [SALTATO] {base_name}: {motivo}")
                     continue
-                # Evita cicli infiniti riscrittura NORM_
                 if mode == 'norm' and base_name.startswith("NORM_"):
                     motivo = "Escluso automaticamente (Già normalizzato)"
                     file_saltati[base_name] = motivo
@@ -177,7 +180,7 @@ def main():
     
     if mode not in ['sm', 'avg', 'norm']:
         try:
-            df_2 = pd.read_csv(second_param, sep=' ')
+            df_2 = pd.read_csv(second_param, sep=' ', skipinitialspace=True)
             df_2.columns = df_2.columns.str.replace('"', '').str.strip()
             if not all(col in df_2.columns for col in colonne_obbligatorie):
                 print(f"[ABORT] Il file {os.path.basename(second_param)} non ha le colonne standard.")
@@ -188,7 +191,7 @@ def main():
         second_name_no_ext = os.path.splitext(os.path.basename(second_param))[0]
 
     print("\n" + "="*60)
-    print(f" AVVIO ELABORAZIONE BATCH (7-in-1)")
+    print(f" AVVIO ELABORAZIONE BATCH (8-in-1)")
     print(f" Modalita Operativa:   {mode.upper()}")
     print(f" Filtro globale --raw: {'ATTIVO (cerca *-raw*.csv)' if exclude_raw else 'DISATTIVO'}")
     print(f" Gestione Assi X:      {'RELAX (Interpolazione senza estrapolazione)' if relax_axis else 'RIGIDA (Coincidenza esatta)'}")
@@ -197,23 +200,17 @@ def main():
     elif mode in ['avg', 'norm']:
         print(f" File totali trovati:  {len(files_sample) + len(file_saltati)}")
     else:
-        print(f" File Operatore/Rif:   {os.path.basename(second_param)}")
+        print(f" File Baseline/Rif:    {os.path.basename(second_param)}")
         
-    if mode == 'res':
-        print(f" Finestra Scelta:      -{window_type} [{w_min} : {w_max}]")
+    if mode in ['res', 'base']:
+        print(f" Finestra Ancoraggio:  -{window_type} [{w_min} : {w_max}]")
     print(f" Destinazione Output:  {custom_output_dir if custom_output_dir else 'Stessa cartella dei sorgenti'}")
     print("="*60 + "\n")
 
-    # PRE-CALCOLI STRUTTURALI PER MODALITÀ FILTRO (-f)
+    # PRE-CALCOLI PER INTERPOLAZIONE
     if mode == 'f':
-        f_min_nm = df_2['Wavelength (nm)'].min()
-        f_max_nm = df_2['Wavelength (nm)'].max()
-        # Per il filtro, usiamo NaN fuori dai bordi così da poter troncare lo spettro
         funzione_filtro = interp1d(df_2['Wavelength (nm)'].values, df_2['Intensity'].values, kind='linear', bounds_error=False, fill_value=np.nan)
-
-    # Funzione di interpolazione riutilizzabile per il --relax
-    elif mode in ['sub', 'm', 'res'] and relax_axis:
-        # Crea la funzione interpolante basata sul file operatore (df_2) usando NaN per il troncamento
+    elif mode in ['sub', 'm', 'res', 'base'] and relax_axis:
         funzione_operatore = interp1d(df_2['Wavelength (nm)'].values, df_2['Intensity'].values, kind='linear', bounds_error=False, fill_value=np.nan)
 
     # ----------------------------------------------------
@@ -229,7 +226,7 @@ def main():
                 file_name = os.path.basename(file_path)
                 nomi_file_pure.append(os.path.splitext(file_name)[0])
                 try:
-                    df = pd.read_csv(file_path, sep=' ')
+                    df = pd.read_csv(file_path, sep=' ', skipinitialspace=True)
                     df.columns = df.columns.str.replace('"', '').str.strip()
                     
                     if not all(col in df.columns for col in colonne_obbligatorie):
@@ -281,7 +278,7 @@ def main():
             dir_dest = custom_output_dir if custom_output_dir else os.path.dirname(files_sample[0])
             output_path = os.path.join(dir_dest, output_filename)
             
-            df_output.to_csv(output_path, sep=' ', index=False)
+            df_output.to_csv(output_path, sep=' ', index=False, quoting=csv.QUOTE_NONNUMERIC)
             print(f"   -> Creato file mediato: {os.path.basename(output_path)}")
         else:
             print("\n[ERRORE] Impossibile calcolare la media: rimasti meno di 2 file validi.")
@@ -298,7 +295,7 @@ def main():
         sys.exit(0)
 
     # ----------------------------------------------------
-    # CICLO DI ELABORAZIONE PER TUTTI GLI ALTRI MODI (1-by-1)
+    # CICLO DI ELABORAZIONE 1-by-1 FOR ALL OTHER MODES
     # ----------------------------------------------------
     for file_path in files_sample:
         dir_dest = custom_output_dir if custom_output_dir else os.path.dirname(file_path)
@@ -306,7 +303,7 @@ def main():
         sample_name_no_ext = os.path.splitext(sample_full_name)[0]
         
         try:
-            df_s = pd.read_csv(file_path, sep=' ')
+            df_s = pd.read_csv(file_path, sep=' ', skipinitialspace=True)
             df_s.columns = df_s.columns.str.replace('"', '').str.strip()
             
             if 'Intensity' not in df_s.columns:
@@ -321,7 +318,6 @@ def main():
                 print(f"   [SALTATO] {sample_full_name}: {motivo}")
                 continue
 
-            # Operazione di normalizzazione (indipendente dall'asse)
             if mode == 'norm':
                 mean_intensity = df_s['Intensity'].mean()
                 if mean_intensity == 0:
@@ -333,16 +329,13 @@ def main():
                 df_output['Intensity'] = df_s['Intensity'].values / mean_intensity
                 output_filename = f"NORM_{sample_full_name}"
 
-            # Operazione scalare (indipendente dall'asse)
             elif mode == 'sm':
                 df_output = df_s.copy()
                 df_output['Intensity'] = df_s['Intensity'].values * scalar_value
                 suffix = f"_TIMES_SCALAR_{second_param}.csv"
                 output_filename = f"{sample_name_no_ext}{suffix}"
                 
-            # Operazioni spettrali combinate (-sub, -m, -res)
-            elif mode in ['sub', 'm', 'res']:
-                # Verifica coincidenza assi standard
+            elif mode in ['sub', 'm', 'res', 'base']:
                 check_lunghezza = len(df_s) == len(df_2)
                 check_bins = np.array_equal(df_s['Bin'].values, df_2['Bin'].values) if check_lunghezza else False
                 check_nm = np.allclose(df_s['Wavelength (nm)'].values, df_2['Wavelength (nm)'].values, atol=1e-4) if check_lunghezza else False
@@ -350,7 +343,6 @@ def main():
                 
                 assi_coincidenti = check_bins and check_nm and check_cm
 
-                # Se non coincidono e non abbiamo messo --relax, saltiamo il file
                 if not assi_coincidenti and not relax_axis:
                     motivo = "Assi X non coincidenti col riferimento (Usa --relax se vuoi forzare l'allineamento)"
                     file_saltati[sample_full_name] = motivo
@@ -359,35 +351,37 @@ def main():
 
                 df_output = df_s[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
                 
-                # Gestione dell'allineamento asse tramite INTERPOLAZIONE (solo se richiesto tramite --relax)
                 if not assi_coincidenti and relax_axis:
-                    # Calcoliamo i valori di intensità del file operatore proiettati sulle nm del campione attuale
                     intensita_operatore_interp = funzione_operatore(df_s['Wavelength (nm)'].values)
                 else:
-                    # Asse coincidente: usiamo l'array originale intatto
                     intensita_operatore_interp = df_2['Intensity'].values
 
-                if mode == 'sub':
-                    df_output['Intensity'] = df_s['Intensity'].values - intensita_operatore_interp
-                    suffix = f"_MINUS_{second_name_no_ext}.csv"
-                    
-                elif mode == 'm':
-                    df_output['Intensity'] = df_s['Intensity'].values * intensita_operatore_interp
-                    suffix = f"_TIMES_{second_name_no_ext}.csv"
-                    
-                elif mode == 'res':
-                    # Maschera dinamica sulla finestra sul file campione attuale
+                if mode in ['res', 'base']:
                     if window_type == 'w':
                         mask_s = (df_s['Wavelength (nm)'] >= w_min) & (df_s['Wavelength (nm)'] <= w_max)
-                        mask_ref = (df_2['Wavelength (nm)'] >= w_min) & (df_2['Wavelength (nm)'] <= w_max)
+                        if not assi_coincidenti and relax_axis:
+                            mask_ref = mask_s
+                            somma_ref = np.nansum(intensita_operatore_interp[mask_ref])
+                        else:
+                            mask_ref = (df_2['Wavelength (nm)'] >= w_min) & (df_2['Wavelength (nm)'] <= w_max)
+                            somma_ref = df_2[mask_ref]['Intensity'].sum()
                     elif window_type == 'rwn':
                         mask_s = (df_s['Relative Wavenumber (cm-1)'] >= w_min) & (df_s['Relative Wavenumber (cm-1)'] <= w_max)
-                        mask_ref = (df_2['Relative Wavenumber (cm-1)'] >= w_min) & (df_2['Relative Wavenumber (cm-1)'] <= w_max)
-                    else:
+                        if not assi_coincidenti and relax_axis:
+                            mask_ref = mask_s
+                            somma_ref = np.nansum(intensita_operatore_interp[mask_ref])
+                        else:
+                            mask_ref = (df_2['Relative Wavenumber (cm-1)'] >= w_min) & (df_2['Relative Wavenumber (cm-1)'] <= w_max)
+                            somma_ref = df_2[mask_ref]['Intensity'].sum()
+                    else: # Bin
                         mask_s = (df_s['Bin'] >= w_min) & (df_s['Bin'] <= w_max)
-                        mask_ref = (df_2['Bin'] >= w_min) & (df_2['Bin'] <= w_max)
+                        if not assi_coincidenti and relax_axis:
+                            mask_ref = mask_s
+                            somma_ref = np.nansum(intensita_operatore_interp[mask_ref])
+                        else:
+                            mask_ref = (df_2['Bin'] >= w_min) & (df_2['Bin'] <= w_max)
+                            somma_ref = df_2[mask_ref]['Intensity'].sum()
                     
-                    somma_ref = df_2[mask_ref]['Intensity'].sum()
                     somma_s = df_s[mask_s]['Intensity'].sum()
                     
                     if somma_s == 0 or somma_ref == 0:
@@ -397,10 +391,22 @@ def main():
                         continue
                         
                     k_factor = somma_ref / somma_s
+                
+                if mode == 'sub':
+                    df_output['Intensity'] = df_s['Intensity'].values - intensita_operatore_interp
+                    suffix = f"_MINUS_{second_name_no_ext}.csv"
+                elif mode == 'm':
+                    df_output['Intensity'] = df_s['Intensity'].values * intensita_operatore_interp
+                    suffix = f"_TIMES_{second_name_no_ext}.csv"
+                elif mode == 'res':
                     df_output['Intensity'] = df_s['Intensity'].values * k_factor
                     suffix = f"_RESCALED_TO_{second_name_no_ext}.csv"
+                elif mode == 'base':
+                    baseline_riscalata = intensita_operatore_interp / k_factor
+                    df_output['Intensity'] = df_s['Intensity'].values - baseline_riscalata
+                    # AGGIORNATO: cita espressamente il file operatore nel nome output
+                    suffix = f"_BASE_CORRECTED_BY_{second_name_no_ext}.csv"
 
-                # TRONCAMENTO CHIRURGICO: Elimina le righe generate fuori dominio (i NaN dell'estrapolazione vietata)
                 if not assi_coincidenti and relax_axis:
                     df_output = df_output.dropna(subset=['Intensity'])
                     if df_output.empty:
@@ -411,36 +417,33 @@ def main():
                 
                 output_filename = f"{sample_name_no_ext}{suffix}"
 
-            # Operazione di filtraggio (-f)
             elif mode == 'f':
-                # Filtra e calcola i punti
-                intensita_filtro_interpolata = funzione_filtro(df_s['Wavelength (nm)'].values)
-                
+                intensita_filtro_interpolata = function_filtro(df_s['Wavelength (nm)'].values) if 'function_filtro' in locals() else funzione_filtro(df_s['Wavelength (nm)'].values)
                 df_output = df_s[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
                 df_output['Intensity'] = df_s['Intensity'].values * intensita_filtro_interpolata
-                
-                # Applica il troncamento eliminando i NaN generati dall'estrapolazione
                 df_output = df_output.dropna(subset=['Intensity'])
                 
                 if df_output.empty:
                     motivo = "Spettro azzerato: nessuna regione in comune con il filtro"
                     file_saltati[sample_full_name] = motivo
-                    print(f"   [SALTATO] {file_saltati}: {motivo}")
+                    print(f"   [SALTATO] {sample_full_name}: {motivo}")
                     continue
                     
                 suffix = f"_FILTERED_BY_{second_name_no_ext}.csv"
                 output_filename = f"{sample_name_no_ext}{suffix}"
 
-            # Salvataggio effettivo del file risultante
+            # Salvataggio
             output_path = os.path.join(dir_dest, output_filename)
-            df_output.to_csv(output_path, sep=' ', index=False)
+            df_output.to_csv(output_path, sep=' ', index=False, quoting=csv.QUOTE_NONNUMERIC)
             
             file_elaborati_count += 1
-            info_relax = " [RELAX ASSI COINVOLTO]" if (mode in ['sub', 'm', 'res'] and not assi_coincidenti) else ""
+            info_relax = " [RELAX ASSI COINVOLTO]" if (mode in ['sub', 'm', 'res', 'base'] and not assi_coincidenti) else ""
             if mode == 'norm':
                 print(f"   [OK] Creato: {output_filename} (Media orig: {mean_intensity:.2f})")
             elif mode == 'res':
-                print(f"   [OK] Creato: {output_filename} (K: {k_factor:.4f}){info_relax}")
+                print(f"   [OK] Creato: {output_filename} (K-factor: {k_factor:.4f}){info_relax}")
+            elif mode == 'base':
+                print(f"   [OK] Creato: {output_filename} (Adattato su finestra, K-factor: {k_factor:.4f}){info_relax}")
             else:
                 print(f"   [OK] Creato: {output_filename}{info_relax}")
 
