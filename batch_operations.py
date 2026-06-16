@@ -41,6 +41,7 @@ def main():
         print("\nOpzioni Globali (Opzionali):")
         print("  -o <cartella>          Specifica una cartella di destinazione personalizzata")
         print("  --raw                  Esclude i file *-raw*.csv da QUALSIASI operazione")
+        print("  --relax                Interpola l'operatore sull'asse del campione (senza estrapolare) se disallineati")
         sys.exit(1)
 
     argomenti = sys.argv[1:]
@@ -49,8 +50,9 @@ def main():
     file_saltati = {}
     file_elaborati_count = 0
 
-    # 1. GESTIONE FLAG FLUSH RAW UNIVERSALE
+    # 1. GESTIONE FLAG GLOBALI
     exclude_raw = '--raw' in argomenti
+    relax_axis = '--relax' in argomenti
 
     # 2. PARSING DELL'OPERAZIONE E DEL PARAMETRO
     mode = None  
@@ -123,7 +125,7 @@ def main():
     if '-s' in argomenti:
         idx_s = argomenti.index('-s')
         for arg in argomenti[idx_s + 1:]:
-            stop_conditions = ['-sub', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', custom_output_dir]
+            stop_conditions = ['-sub', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', '--relax', custom_output_dir]
             if second_param:
                 stop_conditions.append(second_param)
             if arg in stop_conditions:
@@ -189,6 +191,7 @@ def main():
     print(f" AVVIO ELABORAZIONE BATCH (7-in-1)")
     print(f" Modalita Operativa:   {mode.upper()}")
     print(f" Filtro globale --raw: {'ATTIVO (cerca *-raw*.csv)' if exclude_raw else 'DISATTIVO'}")
+    print(f" Gestione Assi X:      {'RELAX (Interpolazione senza estrapolazione)' if relax_axis else 'RIGIDA (Coincidenza esatta)'}")
     if mode == 'sm':
         print(f" Scalare impostato:    {scalar_value}")
     elif mode in ['avg', 'norm']:
@@ -201,23 +204,17 @@ def main():
     print(f" Destinazione Output:  {custom_output_dir if custom_output_dir else 'Stessa cartella dei sorgenti'}")
     print("="*60 + "\n")
 
-    # PRE-CALCOLI STRUTTURALI
+    # PRE-CALCOLI STRUTTURALI PER MODALITÀ FILTRO (-f)
     if mode == 'f':
         f_min_nm = df_2['Wavelength (nm)'].min()
         f_max_nm = df_2['Wavelength (nm)'].max()
-        funzione_filtro = interp1d(df_2['Wavelength (nm)'].values, df_2['Intensity'].values, kind='linear', bounds_error=False, fill_value="extrapolate")
-    elif mode == 'res':
-        if window_type == 'w':
-            mask_ref = (df_2['Wavelength (nm)'] >= w_min) & (df_2['Wavelength (nm)'] <= w_max)
-        elif window_type == 'rwn':
-            mask_ref = (df_2['Relative Wavenumber (cm-1)'] >= w_min) & (df_2['Relative Wavenumber (cm-1)'] <= w_max)
-        else:
-            mask_ref = (df_2['Bin'] >= w_min) & (df_2['Bin'] <= w_max)
-        
-        somma_ref = df_2[mask_ref]['Intensity'].sum()
-        if somma_ref == 0:
-            print("[ABORT] La somma dell'intensita nell'intervallo sul file di riferimento e ZERO. Calcolo impossibile.")
-            sys.exit(1)
+        # Per il filtro, usiamo NaN fuori dai bordi così da poter troncare lo spettro
+        funzione_filtro = interp1d(df_2['Wavelength (nm)'].values, df_2['Intensity'].values, kind='linear', bounds_error=False, fill_value=np.nan)
+
+    # Funzione di interpolazione riutilizzabile per il --relax
+    elif mode in ['sub', 'm', 'res'] and relax_axis:
+        # Crea la funzione interpolante basata sul file operatore (df_2) usando NaN per il troncamento
+        funzione_operatore = interp1d(df_2['Wavelength (nm)'].values, df_2['Intensity'].values, kind='linear', bounds_error=False, fill_value=np.nan)
 
     # ----------------------------------------------------
     # RAMO DI LOGICA SPECIFICO PER LA MEDIAZIONE (-avg)
@@ -324,6 +321,7 @@ def main():
                 print(f"   [SALTATO] {sample_full_name}: {motivo}")
                 continue
 
+            # Operazione di normalizzazione (indipendente dall'asse)
             if mode == 'norm':
                 mean_intensity = df_s['Intensity'].mean()
                 if mean_intensity == 0:
@@ -335,80 +333,116 @@ def main():
                 df_output['Intensity'] = df_s['Intensity'].values / mean_intensity
                 output_filename = f"NORM_{sample_full_name}"
 
+            # Operazione scalare (indipendente dall'asse)
             elif mode == 'sm':
                 df_output = df_s.copy()
                 df_output['Intensity'] = df_s['Intensity'].values * scalar_value
                 suffix = f"_TIMES_SCALAR_{second_param}.csv"
                 output_filename = f"{sample_name_no_ext}{suffix}"
                 
+            # Operazioni spettrali combinate (-sub, -m, -res)
             elif mode in ['sub', 'm', 'res']:
-                if len(df_s) != len(df_2):
-                    motivo = f"Lunghezza diversa rispetto alla reference ({len(df_s)} vs {len(df_2)})"
-                    file_saltati[sample_full_name] = motivo
-                    print(f"   [SALTATO] {sample_full_name}: {motivo}")
-                    continue
+                # Verifica coincidenza assi standard
+                check_lunghezza = len(df_s) == len(df_2)
+                check_bins = np.array_equal(df_s['Bin'].values, df_2['Bin'].values) if check_lunghezza else False
+                check_nm = np.allclose(df_s['Wavelength (nm)'].values, df_2['Wavelength (nm)'].values, atol=1e-4) if check_lunghezza else False
+                check_cm = np.allclose(df_s['Relative Wavenumber (cm-1)'].values, df_2['Relative Wavenumber (cm-1)'].values, atol=1e-2) if check_lunghezza else False
                 
-                check_bins = np.array_equal(df_s['Bin'].values, df_2['Bin'].values)
-                check_nm = np.allclose(df_s['Wavelength (nm)'].values, df_2['Wavelength (nm)'].values, atol=1e-4)
-                check_cm = np.allclose(df_s['Relative Wavenumber (cm-1)'].values, df_2['Relative Wavenumber (cm-1)'].values, atol=1e-2)
-                
-                if not (check_bins and check_nm and check_cm):
-                    motivo = "Assi X (Bin/nm/cm-1) non coincidenti col riferimento"
+                assi_coincidenti = check_bins and check_nm and check_cm
+
+                # Se non coincidono e non abbiamo messo --relax, saltiamo il file
+                if not assi_coincidenti and not relax_axis:
+                    motivo = "Assi X non coincidenti col riferimento (Usa --relax se vuoi forzare l'allineamento)"
                     file_saltati[sample_full_name] = motivo
                     print(f"   [SALTATO] {sample_full_name}: {motivo}")
                     continue
 
                 df_output = df_s[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
                 
+                # Gestione dell'allineamento asse tramite INTERPOLAZIONE (solo se richiesto tramite --relax)
+                if not assi_coincidenti and relax_axis:
+                    # Calcoliamo i valori di intensità del file operatore proiettati sulle nm del campione attuale
+                    intensita_operatore_interp = funzione_operatore(df_s['Wavelength (nm)'].values)
+                else:
+                    # Asse coincidente: usiamo l'array originale intatto
+                    intensita_operatore_interp = df_2['Intensity'].values
+
                 if mode == 'sub':
-                    df_output['Intensity'] = df_s['Intensity'].values - df_2['Intensity'].values
+                    df_output['Intensity'] = df_s['Intensity'].values - intensita_operatore_interp
                     suffix = f"_MINUS_{second_name_no_ext}.csv"
+                    
                 elif mode == 'm':
-                    df_output['Intensity'] = df_s['Intensity'].values * df_2['Intensity'].values
+                    df_output['Intensity'] = df_s['Intensity'].values * intensita_operatore_interp
                     suffix = f"_TIMES_{second_name_no_ext}.csv"
+                    
                 elif mode == 'res':
-                    somma_s = df_s[mask_ref]['Intensity'].sum()
-                    if somma_s == 0:
+                    # Maschera dinamica sulla finestra sul file campione attuale
+                    if window_type == 'w':
+                        mask_s = (df_s['Wavelength (nm)'] >= w_min) & (df_s['Wavelength (nm)'] <= w_max)
+                        mask_ref = (df_2['Wavelength (nm)'] >= w_min) & (df_2['Wavelength (nm)'] <= w_max)
+                    elif window_type == 'rwn':
+                        mask_s = (df_s['Relative Wavenumber (cm-1)'] >= w_min) & (df_s['Relative Wavenumber (cm-1)'] <= w_max)
+                        mask_ref = (df_2['Relative Wavenumber (cm-1)'] >= w_min) & (df_2['Relative Wavenumber (cm-1)'] <= w_max)
+                    else:
+                        mask_s = (df_s['Bin'] >= w_min) & (df_s['Bin'] <= w_max)
+                        mask_ref = (df_2['Bin'] >= w_min) & (df_2['Bin'] <= w_max)
+                    
+                    somma_ref = df_2[mask_ref]['Intensity'].sum()
+                    somma_s = df_s[mask_s]['Intensity'].sum()
+                    
+                    if somma_s == 0 or somma_ref == 0:
                         motivo = "Somma intensita pari a ZERO nella finestra scelta"
                         file_saltati[sample_full_name] = motivo
                         print(f"   [SALTATO] {sample_full_name}: {motivo}")
                         continue
+                        
                     k_factor = somma_ref / somma_s
                     df_output['Intensity'] = df_s['Intensity'].values * k_factor
                     suffix = f"_RESCALED_TO_{second_name_no_ext}.csv"
+
+                # TRONCAMENTO CHIRURGICO: Elimina le righe generate fuori dominio (i NaN dell'estrapolazione vietata)
+                if not assi_coincidenti and relax_axis:
+                    df_output = df_output.dropna(subset=['Intensity'])
+                    if df_output.empty:
+                        motivo = "Spettro azzerato dopo il troncamento: nessuna regione X in comune con l'operatore"
+                        file_saltati[sample_full_name] = motivo
+                        print(f"   [SALTATO] {sample_full_name}: {motivo}")
+                        continue
+                
                 output_filename = f"{sample_name_no_ext}{suffix}"
 
+            # Operazione di filtraggio (-f)
             elif mode == 'f':
-                df_s_clipped = df_s[
-                    (df_s['Wavelength (nm)'] >= f_min_nm - 1e-5) & 
-                    (df_s['Wavelength (nm)'] <= f_max_nm + 1e-5)
-                ].copy()
+                # Filtra e calcola i punti
+                intensita_filtro_interpolata = funzione_filtro(df_s['Wavelength (nm)'].values)
                 
-                if df_s_clipped.empty:
-                    motivo = "Nessuna regione spettrale in comune con il filtro"
+                df_output = df_s[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
+                df_output['Intensity'] = df_s['Intensity'].values * intensita_filtro_interpolata
+                
+                # Applica il troncamento eliminando i NaN generati dall'estrapolazione
+                df_output = df_output.dropna(subset=['Intensity'])
+                
+                if df_output.empty:
+                    motivo = "Spettro azzerato: nessuna regione in comune con il filtro"
                     file_saltati[sample_full_name] = motivo
-                    print(f"   [SALTATO] {sample_full_name}: {motivo}")
+                    print(f"   [SALTATO] {file_saltati}: {motivo}")
                     continue
-                
-                nm_sample = df_s_clipped['Wavelength (nm)'].values
-                intensita_filtro_interpolata = funzione_filtro(nm_sample)
-                
-                df_output = df_s_clipped[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
-                df_output['Intensity'] = df_s_clipped['Intensity'].values * intensita_filtro_interpolata
+                    
                 suffix = f"_FILTERED_BY_{second_name_no_ext}.csv"
                 output_filename = f"{sample_name_no_ext}{suffix}"
 
-            # Salvataggio effettivo
+            # Salvataggio effettivo del file risultante
             output_path = os.path.join(dir_dest, output_filename)
             df_output.to_csv(output_path, sep=' ', index=False)
             
             file_elaborati_count += 1
+            info_relax = " [RELAX ASSI COINVOLTO]" if (mode in ['sub', 'm', 'res'] and not assi_coincidenti) else ""
             if mode == 'norm':
                 print(f"   [OK] Creato: {output_filename} (Media orig: {mean_intensity:.2f})")
             elif mode == 'res':
-                print(f"   [OK] Creato: {output_filename} (K: {k_factor:.4f})")
+                print(f"   [OK] Creato: {output_filename} (K: {k_factor:.4f}){info_relax}")
             else:
-                print(f"   [OK] Creato: {output_filename}")
+                print(f"   [OK] Creato: {output_filename}{info_relax}")
 
         except Exception as e:
             motivo = f"Errore critico imprevisto: {e}"
