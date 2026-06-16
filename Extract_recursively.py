@@ -6,6 +6,7 @@ import pandas as pd
 
 # Intercettiamo e ammutoliamo i warning prima di importare la libreria
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*SpeTools.*")
 
 import spe2py as spe
@@ -16,23 +17,36 @@ LASER_WAVELENGTH = 632.8
 # ==============================================================================
 
 def batch_convert_spe():
+    # 1. GESTIONE FLAG UNIVERSALE --raw
+    argomenti = sys.argv[1:]
+    exclude_raw = '--raw' in argomenti
+
     print(f"=== AVVIO CONVERSIONE AUTOMATICA (Laser: {LASER_WAVELENGTH} nm) ===")
+    print(f"Filtro globale --raw: {'ATTIVO (cerca *-raw*.spe)' if exclude_raw else 'DISATTIVO'}")
+    print("-" * 60)
     
-    # 1. Trova tutti i file .spe ricorsivamente
+    # 2. Trova tutti i file .spe ricorsivamente con filtro selettivo
     spe_files = []
+    file_saltati_count = 0
+
     for root, _, files in os.walk('.'):
         for file in files:
             if file.lower().endswith('.spe'):
+                # Applica il filtro chirurgico richiesto solo se la flag è attiva
+                if exclude_raw and "-raw" in file.lower():
+                    print(f"   [SALTATO] {file}: Escluso tramite flag --raw")
+                    file_saltati_count += 1
+                    continue
                 spe_files.append(os.path.abspath(os.path.join(root, file)))
                 
     total_files = len(spe_files)
     if total_files == 0:
-        print("[AVVISO] Nessun file .spe trovato.")
+        print(f"\n[AVVISO] Nessun file .spe da elaborare (Saltati: {file_saltati_count}).")
         return
         
-    print(f"Trovati {total_files} file .spe da elaborare.\n" + "-"*50)
+    print(f"\nFile totali da elaborare: {total_files} (Saltati tramite --raw: {file_saltati_count})\n" + "-"*60)
     
-    # 2. HACK: Forza spe2py a prendere la lista dei file senza aprire la GUI
+    # 3. HACK: Forza spe2py a prendere la lista dei file senza aprire la GUI
     spe.fdialog.askopenfilenames = lambda **kwargs: spe_files
     
     print("Caricamento dei file...")
@@ -46,7 +60,7 @@ def batch_convert_spe():
     else:
         loaded_files = [spe_tool]
 
-    # 3. Ciclo di esportazione
+    # 4. Ciclo di esportazione
     for idx, obj in enumerate(loaded_files):
         full_path = spe_files[idx]
         dir_name = os.path.dirname(full_path)
@@ -95,7 +109,7 @@ def batch_convert_spe():
                     wavelengths_col = np.round(wavelengths_nm, 4).tolist()
                     wavenumbers_col = np.round(relative_wavenumbers, 2).tolist()
 
-            # Qui non può più fallire: tutte le liste hanno lunghezza 'num_points'
+            # DataFrame strutturato
             df = pd.DataFrame({
                 'Bin': bins,
                 'Wavelength (nm)': wavelengths_col,
@@ -107,7 +121,7 @@ def batch_convert_spe():
             df.to_csv(os.path.join(dir_name, output_name), sep=' ', index=False)
             print(f"   -> Creato: {output_name}")
             
-        print("-" * 50)
+        print("-" * 60)
 
     print("\n=== SCRIPT COMPLETATO ===")
 
