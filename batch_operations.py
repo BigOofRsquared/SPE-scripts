@@ -24,21 +24,23 @@ def find_common_prefix(strings):
 
 def main():
     if len(sys.argv) < 2:
-        print("\nUso dello script Batch Operations (6-in-1):")
-        print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro/file> [-o <cartella_output>]")
+        print("\nUso dello script Batch Operations (7-in-1):")
+        print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro/file> [opzioni]")
         print("\nOperazioni disponibili (sceglierne una):")
         print("  -sub <file_back>       Sottrazione -> OUT: sample_MINUS_back.csv")
         print("  -m   <file_molt>       Moltiplicazione pura -> OUT: sample_TIMES_molt.csv")
         print("  -f   <file_filtro>     Filtro con interpolazione -> OUT: sample_FILTERED_BY_filtro.csv")
         print("  -res <file_rif>        Riscalamento locale -> OUT: sample_RESCALED_TO_rif.csv")
         print("  -sm  <valore_scalare>  Moltiplicazione per uno scalare -> OUT: sample_TIMES_SCALAR_valore.csv")
-        print("  -avg                   Mediazione spettri (Esclude i file RAW *-raw*.csv) -> OUT: nomecomune_AVG.csv")
+        print("  -avg                   Mediazione spettri -> OUT: nomecomune_AVG.csv")
+        print("  -norm                  Normalizzazione intensità (Media ad 1.0) -> OUT: NORM_sample.csv")
         print("\nOpzioni Finestra (Obbligatorie SOLO per il riscalamento -res, sceglierne una):")
         print("  -w <min> <max>         Intervallo in Wavelength (nm)")
         print("  -rwn <min> <max>       Intervallo in Relative Wavenumber (cm-1)")
         print("  -b <min> <max>         Intervallo in Bin (pixel)")
-        print("\nOpzioni Output (Opzionale):")
+        print("\nOpzioni Globali (Opzionali):")
         print("  -o <cartella>          Specifica una cartella di destinazione personalizzata")
+        print("  --raw                  Esclude i file *-raw*.csv da QUALSIASI operazione")
         sys.exit(1)
 
     argomenti = sys.argv[1:]
@@ -47,25 +49,29 @@ def main():
     file_saltati = {}
     file_elaborati_count = 0
 
-    # 1. PARSING DELL'OPERAZIONE E DEL PARAMETRO
+    # 1. GESTIONE FLAG FLUSH RAW UNIVERSALE
+    exclude_raw = '--raw' in argomenti
+
+    # 2. PARSING DELL'OPERAZIONE E DEL PARAMETRO
     mode = None  
     second_param = None
 
-    for flag, m_type in [('-sub', 'sub'), ('-m', 'm'), ('-f', 'f'), ('-res', 'res'), ('-sm', 'sm'), ('-avg', 'avg')]:
+    operazioni_lista = [('-sub', 'sub'), ('-m', 'm'), ('-f', 'f'), ('-res', 'res'), ('-sm', 'sm'), ('-avg', 'avg'), ('-norm', 'norm')]
+    for flag, m_type in operazioni_lista:
         if flag in argomenti:
             if mode is not None:
-                print("[ERRORE] Puoi specificare una sola operazione alla volta tra -sub, -m, -f, -res, -sm, -avg.")
+                print("[ERRORE] Puoi specificare una sola operazione alla volta tra quelle disponibili.")
                 sys.exit(1)
             mode = m_type
             idx = argomenti.index(flag)
-            if mode != 'avg' and idx + 1 < len(argomenti):
+            if mode not in ['avg', 'norm'] and idx + 1 < len(argomenti):
                 second_param = argomenti[idx + 1].replace('"', '').strip()
 
     if not mode:
-        print("[ERRORE] Devi specificare un'operazione valida (-sub, -m, -f, -res, -sm, -avg).")
+        print("[ERRORE] Devi specificare un'operazione valida.")
         sys.exit(1)
 
-    if mode != 'avg' and not second_param:
+    if mode not in ['avg', 'norm'] and not second_param:
         print(f"[ERRORE] L'operazione {mode} richiede un file o un parametro successivo.")
         sys.exit(1)
 
@@ -76,12 +82,12 @@ def main():
         except ValueError:
             print(f"[ERRORE] La modalita -sm richiede un valore numerico valido. Ricevuto: '{second_param}'")
             sys.exit(1)
-    elif mode != 'avg':
+    elif mode != 'avg' and mode != 'norm':
         if not os.path.isfile(second_param):
             print(f"[ERRORE] Il file operatore specificato non esiste: {second_param}")
             sys.exit(1)
 
-    # 2. PARSING DELLA CARTELLA DI OUTPUT (-o)
+    # 3. PARSING DELLA CARTELLA DI OUTPUT (-o)
     custom_output_dir = None
     if '-o' in argomenti:
         idx_o = argomenti.index('-o')
@@ -90,7 +96,7 @@ def main():
             if custom_output_dir:
                 os.makedirs(custom_output_dir, exist_ok=True)
 
-    # 3. PARSING DELLA FINESTRA DI INTEGRAZIONE (SOLO SE IN MODALITÀ -res)
+    # 4. PARSING DELLA FINESTRA DI INTEGRAZIONE (SOLO SE IN MODALITÀ -res)
     window_type = None
     w_min, w_max = None, None
 
@@ -112,12 +118,12 @@ def main():
         print("[ERRORE] La modalita riscalamento (-res) richiede obbligatoriamente un intervallo (-w, -rwn o -b).")
         sys.exit(1)
 
-    # 4. PARSING DEI FILE DI SAMPLE (-s)
+    # 5. PARSING DEI FILE DI SAMPLE (-s)
     sample_patterns = []
     if '-s' in argomenti:
         idx_s = argomenti.index('-s')
         for arg in argomenti[idx_s + 1:]:
-            stop_conditions = ['-sub', '-m', '-f', '-res', '-sm', '-avg', '-w', '-rwn', '-b', '-o', custom_output_dir]
+            stop_conditions = ['-sub', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', custom_output_dir]
             if second_param:
                 stop_conditions.append(second_param)
             if arg in stop_conditions:
@@ -136,16 +142,25 @@ def main():
             espanse = [item_pulito]
         for f in espanse:
             if f.lower().endswith('.csv'):
-                if mode == 'avg' and "-raw" in os.path.basename(f).lower():
-                    motivo = "Escluso automaticamente (File RAW)"
-                    file_saltati[os.path.basename(f)] = motivo
-                    print(f"   [SALTATO] {os.path.basename(f)}: {motivo}")
+                base_name = os.path.basename(f)
+                
+                # CONTROLLO SELETTIVO: Salta solo se contiene espressamente "-raw"
+                if exclude_raw and "-raw" in base_name.lower():
+                    motivo = "Escluso tramite flag --raw"
+                    file_saltati[base_name] = motivo
+                    print(f"   [SALTATO] {base_name}: {motivo}")
+                    continue
+                # Evita cicli infiniti riscrittura NORM_
+                if mode == 'norm' and base_name.startswith("NORM_"):
+                    motivo = "Escluso automaticamente (Già normalizzato)"
+                    file_saltati[base_name] = motivo
+                    print(f"   [SALTATO] {base_name}: {motivo}")
                     continue
                 files_sample.append(os.path.abspath(f))
 
     files_sample = list(dict.fromkeys(files_sample))
 
-    if mode not in ['sm', 'avg']:
+    if mode not in ['sm', 'avg', 'norm']:
         abs_second_file = os.path.abspath(second_param)
         if abs_second_file in files_sample:
             files_sample.remove(abs_second_file)
@@ -154,11 +169,11 @@ def main():
         print("[ERRORE] Nessun file di sample valido trovato con il pattern fornito.")
         sys.exit(1)
 
-    # 5. CARICAMENTO FILE OPERATORE / RIFERIMENTO
+    # 6. CARICAMENTO FILE OPERATORE / RIFERIMENTO
     colonne_obbligatorie = ['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)', 'Intensity']
     df_2 = None
     
-    if mode not in ['sm', 'avg']:
+    if mode not in ['sm', 'avg', 'norm']:
         try:
             df_2 = pd.read_csv(second_param, sep=' ')
             df_2.columns = df_2.columns.str.replace('"', '').str.strip()
@@ -171,12 +186,13 @@ def main():
         second_name_no_ext = os.path.splitext(os.path.basename(second_param))[0]
 
     print("\n" + "="*60)
-    print(f" AVVIO ELABORAZIONE BATCH (6-in-1)")
+    print(f" AVVIO ELABORAZIONE BATCH (7-in-1)")
     print(f" Modalita Operativa:   {mode.upper()}")
+    print(f" Filtro globale --raw: {'ATTIVO (cerca *-raw*.csv)' if exclude_raw else 'DISATTIVO'}")
     if mode == 'sm':
         print(f" Scalare impostato:    {scalar_value}")
-    elif mode == 'avg':
-        print(f" File candidati:       {len(files_sample) + len(file_saltati)}")
+    elif mode in ['avg', 'norm']:
+        print(f" File totali trovati:  {len(files_sample) + len(file_saltati)}")
     else:
         print(f" File Operatore/Rif:   {os.path.basename(second_param)}")
         
@@ -273,7 +289,6 @@ def main():
         else:
             print("\n[ERRORE] Impossibile calcolare la media: rimasti meno di 2 file validi.")
 
-        # STAMPA IL RECAP FINALE ED ESCI
         print("\n" + "="*40)
         print(f" RECONCILIATION RECAP (-AVG)")
         print(f" File elaborati con successo: {file_elaborati_count}")
@@ -297,16 +312,34 @@ def main():
             df_s = pd.read_csv(file_path, sep=' ')
             df_s.columns = df_s.columns.str.replace('"', '').str.strip()
             
-            if not all(col in df_s.columns for col in colonne_obbligatorie):
-                motivo = "Mancano colonne standard"
+            if 'Intensity' not in df_s.columns:
+                motivo = "Manca la colonna 'Intensity'"
+                file_saltati[sample_full_name] = motivo
+                print(f"   [SALTATO] {sample_full_name}: {motivo}")
+                continue
+                
+            if mode != 'norm' and not all(col in df_s.columns for col in colonne_obbligatorie):
+                motivo = "Mancano colonne Raman standard"
                 file_saltati[sample_full_name] = motivo
                 print(f"   [SALTATO] {sample_full_name}: {motivo}")
                 continue
 
-            if mode == 'sm':
+            if mode == 'norm':
+                mean_intensity = df_s['Intensity'].mean()
+                if mean_intensity == 0:
+                    motivo = "Media intensità pari a ZERO! Divisione impossibile."
+                    file_saltati[sample_full_name] = motivo
+                    print(f"   [SALTATO] {sample_full_name}: {motivo}")
+                    continue
+                df_output = df_s.copy()
+                df_output['Intensity'] = df_s['Intensity'].values / mean_intensity
+                output_filename = f"NORM_{sample_full_name}"
+
+            elif mode == 'sm':
                 df_output = df_s.copy()
                 df_output['Intensity'] = df_s['Intensity'].values * scalar_value
                 suffix = f"_TIMES_SCALAR_{second_param}.csv"
+                output_filename = f"{sample_name_no_ext}{suffix}"
                 
             elif mode in ['sub', 'm', 'res']:
                 if len(df_s) != len(df_2):
@@ -343,6 +376,7 @@ def main():
                     k_factor = somma_ref / somma_s
                     df_output['Intensity'] = df_s['Intensity'].values * k_factor
                     suffix = f"_RESCALED_TO_{second_name_no_ext}.csv"
+                output_filename = f"{sample_name_no_ext}{suffix}"
 
             elif mode == 'f':
                 df_s_clipped = df_s[
@@ -362,14 +396,16 @@ def main():
                 df_output = df_s_clipped[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
                 df_output['Intensity'] = df_s_clipped['Intensity'].values * intensita_filtro_interpolata
                 suffix = f"_FILTERED_BY_{second_name_no_ext}.csv"
+                output_filename = f"{sample_name_no_ext}{suffix}"
 
             # Salvataggio effettivo
-            output_filename = f"{sample_name_no_ext}{suffix}"
             output_path = os.path.join(dir_dest, output_filename)
             df_output.to_csv(output_path, sep=' ', index=False)
             
             file_elaborati_count += 1
-            if mode == 'res':
+            if mode == 'norm':
+                print(f"   [OK] Creato: {output_filename} (Media orig: {mean_intensity:.2f})")
+            elif mode == 'res':
                 print(f"   [OK] Creato: {output_filename} (K: {k_factor:.4f})")
             else:
                 print(f"   [OK] Creato: {output_filename}")
