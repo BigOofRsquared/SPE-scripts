@@ -8,7 +8,7 @@ from scipy.interpolate import interp1d
 def main():
     if len(sys.argv) < 2:
         print("\nUso dello script Batch Operations (5-in-1):")
-        print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro>")
+        print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro> [-o <cartella_output>]")
         print("\nOperazioni disponibili (sceglierne una):")
         print("  -sub <file_back>       Sottrazione -> OUT: sample_MINUS_back.csv")
         print("  -m   <file_molt>       Moltiplicazione pura -> OUT: sample_TIMES_molt.csv")
@@ -19,8 +19,10 @@ def main():
         print("  -w <min> <max>         Intervallo in Wavelength (nm)")
         print("  -rwn <min> <max>       Intervallo in Relative Wavenumber (cm-1)")
         print("  -b <min> <max>         Intervallo in Bin (pixel)")
+        print("\nOpzioni Output (Opzionale):")
+        print("  -o <cartella>          Specifica una cartella di destinazione personalizzata")
         print("\nEsempi:")
-        print("  python batch_operations.py -s 10V/EXPORT*.csv -sub background.csv")
+        print("  python batch_operations.py -s 10V/EXPORT*.csv -sub background.csv -o 10V_elaborati")
         print("  python batch_operations.py -s *.csv -sm 2.5\n")
         sys.exit(1)
 
@@ -50,14 +52,24 @@ def main():
         try:
             scalar_value = float(second_param)
         except ValueError:
-            print(f"[ERRORE] La modalità -sm richiede un valore numerico valido. Ricevuto: '{second_param}'")
+            print(f"[ERRORE] La modalita -sm richiede un valore numerico valido. Ricevuto: '{second_param}'")
             sys.exit(1)
     else:
         if not os.path.isfile(second_param):
             print(f"[ERRORE] Il file operatore specificato non esiste: {second_param}")
             sys.exit(1)
 
-    # 2. PARSING DELLA FINESTRA DI INTEGRAZIONE (SOLO SE IN MODALITÀ -res)
+    # 2. PARSING DELLA CARTELLA DI OUTPUT (-o)
+    custom_output_dir = None
+    if '-o' in argomenti:
+        idx_o = argomenti.index('-o')
+        if idx_o + 1 < len(argomenti):
+            custom_output_dir = argomenti[idx_o + 1].replace('"', '').strip()
+            # Se la cartella non esiste, la creiamo subito
+            if custom_output_dir:
+                os.makedirs(custom_output_dir, exist_ok=True)
+
+    # 3. PARSING DELLA FINESTRA DI INTEGRAZIONE (SOLO SE IN MODALITÀ -res)
     window_type = None
     w_min, w_max = None, None
 
@@ -76,16 +88,16 @@ def main():
                 sys.exit(1)
 
     if mode == 'res' and not window_type:
-        print("[ERRORE] La modalità riscalamento (-res) richiede obbligatoriamente un intervallo (-w, -rwn o -b).")
+        print("[ERRORE] La modalita riscalamento (-res) richiede obbligatoriamente un intervallo (-w, -rwn o -b).")
         sys.exit(1)
 
-    # 3. PARSING DEI FILE DI SAMPLE (-s)
+    # 4. PARSING DEI FILE DI SAMPLE (-s)
     sample_patterns = []
     if '-s' in argomenti:
         idx_s = argomenti.index('-s')
-        # Raccogliamo i sample fermandoci se becchiamo altre flag operative o di finestra
+        # Raccogliamo i sample fermandoci se becchiamo altre flag operative, di finestra o di output
         for arg in argomenti[idx_s + 1:]:
-            if arg in ['-sub', '-m', '-f', '-res', '-sm', '-w', '-rwn', '-b', second_param]:
+            if arg in ['-sub', '-m', '-f', '-res', '-sm', '-w', '-rwn', '-b', '-o', second_param, custom_output_dir]:
                 break
             sample_patterns.append(arg)
     else:
@@ -106,7 +118,7 @@ def main():
     # Rimozione duplicati mantenendo l'ordine
     files_sample = list(dict.fromkeys(files_sample))
 
-    # Escludiamo l'operatore dalla lista dei sample se non siamo in modalità scalare ed è caduto nel pattern *
+    # Escludiamo l'operatore dalla lista dei sample se non siamo in modalita scalare ed e caduto nel pattern *
     if mode != 'sm':
         abs_second_file = os.path.abspath(second_param)
         if abs_second_file in files_sample:
@@ -116,7 +128,7 @@ def main():
         print("[ERRORE] Nessun file di sample valido trovato con il pattern fornito.")
         sys.exit(1)
 
-    # 4. CARICAMENTO E PRE-CALCOLI DEL FILE OPERATORE (SE NON SIAMO IN MODALITÀ SCALARE)
+    # 5. CARICAMENTO E PRE-CALCOLI DEL FILE OPERATORE (SE NON SIAMO IN MODALITÀ SCALARE)
     colonne_obbligatorie = ['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)', 'Intensity']
     df_2 = None
     
@@ -134,7 +146,7 @@ def main():
 
     print("\n" + "="*60)
     print(f" AVVIO ELABORAZIONE BATCH (5-in-1)")
-    print(f" Modalità Operativa:   {mode.upper()}")
+    print(f" Modalita Operativa:   {mode.upper()}")
     if mode == 'sm':
         print(f" Scalare impostato:    {scalar_value}")
     else:
@@ -142,6 +154,8 @@ def main():
         
     if mode == 'res':
         print(f" Finestra Scelta:      -{window_type} [{w_min} : {w_max}]")
+    
+    print(f" Destinazione Output:  {custom_output_dir if custom_output_dir else 'Stessa cartella dei sorgenti'}")
     print(f" File Sample Trovati:  {len(files_sample)}")
     print("="*60 + "\n")
 
@@ -166,12 +180,13 @@ def main():
         
         somma_ref = df_2[mask_ref]['Intensity'].sum()
         if somma_ref == 0:
-            print("[ABORT] La somma dell'intensità nell'intervallo sul file di riferimento è ZERO. Calcolo impossibile.")
+            print("[ABORT] La somma dell'intensita nell'intervallo sul file di riferimento e ZERO. Calcolo impossibile.")
             sys.exit(1)
 
-    # 5. CICLO DI ELABORAZIONE BATCH SUI SAMPLES
+    # 6. CICLO DI ELABORAZIONE BATCH SUI SAMPLES
     for file_path in files_sample:
-        dir_name = os.path.dirname(file_path)
+        # Se -o è definito usiamo custom_output_dir, altrimenti la cartella del file originale
+        dir_dest = custom_output_dir if custom_output_dir else os.path.dirname(file_path)
         sample_full_name = os.path.basename(file_path)
         sample_name_no_ext = os.path.splitext(sample_full_name)[0]
         
@@ -185,13 +200,11 @@ def main():
 
             # Logica ad albero in base al mode
             if mode == 'sm':
-                # Moltiplicazione scalare: nessuna dipendenza da altri file, asse X ereditato liscio
                 df_output = df_s.copy()
                 df_output['Intensity'] = df_s['Intensity'].values * scalar_value
                 suffix = f"_TIMES_SCALAR_{second_param}.csv"
                 
             elif mode in ['sub', 'm', 'res']:
-                # Controllo compatibilità geometrica assi X rigidissimo
                 if len(df_s) != len(df_2):
                     print(f"   [SALTATO] {sample_full_name} ha lunghezza diversa rispetto alla reference ({len(df_s)} vs {len(df_2)})")
                     continue
@@ -215,7 +228,7 @@ def main():
                 elif mode == 'res':
                     somma_s = df_s[mask_ref]['Intensity'].sum()
                     if somma_s == 0:
-                        print(f"   [SALTATO] {sample_full_name} ha somma dell'intensità pari a ZERO nella finestra.")
+                        print(f"   [SALTATO] {sample_full_name} ha somma dell'intensita pari a ZERO nella finestra.")
                         continue
                     k_factor = somma_ref / somma_s
                     df_output['Intensity'] = df_s['Intensity'].values * k_factor
@@ -238,15 +251,15 @@ def main():
                 df_output['Intensity'] = df_s_clipped['Intensity'].values * intensita_filtro_interpolata
                 suffix = f"_FILTERED_BY_{second_name_no_ext}.csv"
 
-            # 6. SALVATAGGIO AUTOMATICO
+            # 7. SALVATAGGIO AUTOMATICO
             output_filename = f"{sample_name_no_ext}{suffix}"
-            output_path = os.path.join(dir_name, output_filename)
+            output_path = os.path.join(dir_dest, output_filename)
             df_output.to_csv(output_path, sep=' ', index=False)
             
             if mode == 'res':
-                print(f"   -> Creato: {output_filename} (Fattore K: {k_factor:.6f})")
+                print(f"   -> Creato: {os.path.join(os.path.basename(dir_dest), output_filename)} (Fattore K: {k_factor:.6f})")
             else:
-                print(f"   -> Creato: {output_filename}")
+                print(f"   -> Creato: {os.path.join(os.path.basename(dir_dest), output_filename)}")
 
         except Exception as e:
             print(f"   [ERRORE] Impossibile elaborare {sample_full_name}: {e}")
