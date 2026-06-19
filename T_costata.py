@@ -23,19 +23,24 @@ def somma_sigmoidi(x, *parametri_sigmoidi):
         filtro += a * (1.0 + erf((x - lam_cut) / s))
     return filtro
 
-def teorical_model(x, T4, A, *s):
+def black_body(x, A, T):
     """
-    Modello teorico: Legge di Planck (Corpo Nero) * Filtro a Sigmoidi
+    Modello teorico: Legge di Planck (Corpo Nero)
     """
     lam = x * 1e-9 
     h, c_vel, kB = 6.62607015e-34, 299792458, 1.380649e-23
     
-    exponent = (h * c_vel) / (lam * kB * T4**0.25)
+    exponent = (h * c_vel) / (lam * kB * T)
     exponent = np.clip(exponent, None, 7000) 
     planck = (2 * h * c_vel**2) / (lam**5 * (np.exp(exponent) - 1))
-    
+    return A * planck
+
+def teorical_model(x, T, A, *s):
+    """
+    Modello teorico: Legge di Planck (Corpo Nero) * Filtro a Sigmoidi
+    """    
     filtro = somma_sigmoidi(x, *s)
-    return A * planck * filtro
+    return black_body(x, A, T) * filtro
 
 def loss_function_1_file(file_params, x, y):
     """
@@ -44,7 +49,7 @@ def loss_function_1_file(file_params, x, y):
     y_pred = teorical_model(x, *file_params)
     return np.sum((y - y_pred) ** 2)
 
-def loss_function(params, batch_x, batch_y):
+def loss_function(params, T_predicted, batch_x, batch_y, y_avg2):
     """
     Funzione di costo globale per il fit simultaneo (T libere ottimizzate).
     """
@@ -62,7 +67,9 @@ def loss_function(params, batch_x, batch_y):
         
         x_data = batch_x[i]
         y_data = batch_y[i]
-        cost += loss_function_1_file(curr_params, x_data, y_data) / np.average(y_data)**2
+        cost += loss_function_1_file(curr_params, x_data, y_data) / y_avg2[i]
+        cost += 50.0 * ((T_predicted[i] - T_array[i])/T_predicted[i])**2
+
     return cost
 
 def interpolate_temperature(tabella_calibrazione, r_val):
@@ -192,18 +199,42 @@ if not x_lista:
 print(f"\nCaricati con successo {len(x_lista)} file.")
 num_file = len(x_lista)
 
+y_average = []
+for i, y_col in enumerate(y_lista):
+    y_average.append(np.average(y_col))
+
+y_average2 = np.power(y_average, 2)
 
 # =============================================================================
 # 3. COSTRUZIONE VETTORE DI STIMA INIZIALE E OTTIMIZZAZIONE
 # =============================================================================
-p0_T = np.power(T_lista, 4).tolist()
-p0_A = [1e-9]       # Guess ampiezza comune
+p0_T = T_lista
+p0_A = [7e-7]       # Guess ampiezza comune
 p0_sigmoide = (
+[0.2]+[630.0]+[1.0]+
+[0.2]+[635.0]+[1.0]+
+[0.2]+[645.0]+[1.0]+
+[0.2]+[650.0]+[1.0]
+) + (
 [1.0]+[640.0]+[1.0]+
-[1.0]+[660.0]+[1.0]+
-[1.0]+[670.0]+[1.0]+
+[2.0]+[660.0]+[1.0]+
+[2.0]+[672.0]+[1.0]+
 [1.0]+[690.0]+[1.0]
-) * 3
+) + (
+[ 0.2]+[675.0]+[1.0]+
+[-0.2]+[680.0]+[1.0]+
+[ 0.2]+[685.0]+[1.0]+
+[-0.2]+[690.0]+[1.0]+
+[ 0.2]+[695.0]+[1.0]+
+[-0.2]+[700.0]+[1.0]#+
+#[ 0.2]+[705.0]+[1.0]+
+#[-0.2]+[710.0]+[1.0]+
+#[ 0.2]+[695.0]+[1.0]+
+#[-0.2]+[700.0]+[1.0]+
+#[ 0.2]+[705.0]+[1.0]+
+#[-0.2]+[710.0]+[1.0]
+)
+
 
 # Mega-vettore: [T1, T2, ..., Tn, A, s1, s2, ...]
 stima_iniziale = p0_T + p0_A + p0_sigmoide
@@ -212,7 +243,7 @@ print("\nAvvio dell'ottimizzazione globale. Attendere...")
 result = minimize(
     loss_function, 
     stima_iniziale, 
-    args=(x_lista, y_lista), 
+    args=(T_lista, x_lista, y_lista, y_average2), 
     method='Powell'
 )
 
@@ -235,7 +266,7 @@ print(f"--- PARAMETRI FISICI CONDIVISI ---")
 print(f"Ampiezza (A):       {A_fit:.8e}")
 print(f"--- TEMPERATURE (Guess iniziale vs Ottimizzate) ---")
 for i in range(num_file):
-    print(f"File {file_validi[i]}: R = {r_lista[i]:.2f} Ohm | Guess T = {T_lista[i]:.1f} K -> Fit T = {T_fit[i]**0.25:.1f} K")
+    print(f"File {file_validi[i]}: R = {r_lista[i]:.2f} Ohm | Guess T = {T_lista[i]:.1f} K -> Fit T = {T_fit[i]:.1f} K")
 
 print(f"\n--- PARAMETRI SIGMOIDI ({len(s_fit) // 3} componenti) ---")
 print(f"{'Sigmoide':<10} | {'Peso (a)':<12} | {'Taglio (lam)':<12} | {'Larghezza (σ)':<12}")
@@ -259,9 +290,46 @@ print(output_copiaincolla)
 print(")")
 print("="*50 + "\n")
 
+print("\n" + "="*50)
+print(f"{'ESPORTAZIONE FILTRO AD ALTA RISOLUZIONE':^50}")
+print("="*50)
+
+# Troviamo gli estremi assoluti di lunghezza d'onda combinando tutti i file caricati
+wl_min = min(np.min(x) for x in x_lista)
+wl_max = max(np.max(x) for x in x_lista)
+
+# Arrotondiamo al decimo di nm per avere estremi puliti
+wl_min_round = np.floor(wl_min * 10) / 10
+wl_max_round = np.ceil(wl_max * 10) / 10
+
+# Generiamo la nuova griglia lineare con passo 0.1 nm
+# (max - min) / 0.1 + 1 calcola esattamente quanti punti servono
+num_punti = int(round((wl_max_round - wl_min_round) / 0.1)) + 1
+x_uniforme = np.linspace(wl_min_round, wl_max_round, num_punti)
+
+# Calcoliamo la risposta del filtro fittato sulla nuova griglia
+y_filtro_esportazione = somma_sigmoidi(x_uniforme, *s_fit)
+
+# Creiamo il DataFrame coerente con le colonne standard
+df_filtro = pd.DataFrame({
+    "Wavelength (nm)": x_uniforme,
+    "Estimated_Filter_Response": y_filtro_esportazione
+})
+
+nome_file_output = "filtro_stimato_passo_0.1nm.csv"
+
+# Salvataggio in formato CSV (valori separati da spazio)
+df_filtro.to_csv(nome_file_output, sep=" ", index=False)
+
+print(f"Intervallo coperto: da {wl_min_round:.1f} nm a {wl_max_round:.1f} nm")
+print(f"Passo di campionamento: 0.1 nm")
+print(f"Numero totale di punti esportati: {len(x_uniforme)}")
+print(f"[SUCCESS] File salvato in:")
+print(f"--> {os.path.abspath(nome_file_output)}")
+print("="*50 + "\n")
 
 # =============================================================================
-# 5. GRAPHIC PLOT
+# 5. GRAPHIC PLOT (LOG-LOG SCALE)
 # =============================================================================
 plt.figure(figsize=(12, 7))
 
@@ -272,13 +340,61 @@ for i in range(num_file):
     # Costruiamo il vettore parametri specifico per l'i-esimo file usando la T fittata
     params_file = [T_fit[i], A_fit] + list(s_fit)
     
-    plt.scatter(x_data, y_data, alpha=0.4, label=f'Dati {file_validi[i]}')
-    plt.plot(x_data, teorical_model(x_data, *params_file), lw=2, label=f'Fit T={T_fit[i]**0.25:.1f}K', color='black')
+    plt.scatter(x_data, y_data, alpha=0.4, label=f'Dati {file_validi[i]}', s=1)
+    plt.plot(x_data, teorical_model(x_data, *params_file), lw=2, label=f'Fit T={T_fit[i]:.1f}K', color='black')
 
-plt.title('Batch Fit simultaneo (Temperature Libere da Guess R-T)')
-plt.xlabel('Wavelength (nm)')
-plt.ylabel('Intensity')
-plt.legend(loc='upper right', fontsize='small', ncol=2)
-plt.grid(True, linestyle='--', alpha=0.5)
+# Abilitazione della scala log-log
+#plt.xscale('log')
+#plt.yscale('log')
+
+plt.title('Batch Fit simultaneo (Scala Log-Log)')
+plt.xlabel('Wavelength (nm) [Log Scale]')
+plt.ylabel('Intensity [Log Scale]')
+#plt.legend(loc='upper right', fontsize='small', ncol=2)
+plt.grid(True, which="both", linestyle='--', alpha=0.5) # "both" mostra la griglia anche per i minor ticks del logaritmo
 plt.tight_layout()
+
+plt.figure(figsize=(12, 7)) # Apre una NUOVA finestra/figura separata
+
+for i in range(num_file):
+    x_data = x_lista[i]
+    
+    # Calcolo del corpo nero teorico puro per la temperatura di questo file
+    # Uso T_fit[i] o T_fit[i]**0.25 a seconda di come hai scalato la T nel fit
+    y_black_body = black_body(x_data, A_fit, T_fit[i])
+    area = np.trapz(y_black_body)
+    #y_black_body /= area
+    
+    plt.plot(x_data, y_black_body, lw=2.5, label=f'Corpo Nero Puro T={T_fit[i]:.1f}K')
+
+#plt.xscale('log')
+#plt.yscale('log')
+plt.title('Spettro Teorico del Corpo Nero Puro (Senza Risposta Strumentale)')
+plt.xlabel('Wavelength (nm) [Log Scale]')
+plt.ylabel('Theoretical Intensity [Log Scale]')
+plt.legend(loc='upper right', fontsize='small')
+plt.grid(True, which="both", linestyle='--', alpha=0.5)
+plt.tight_layout()
+
+plt.figure(figsize=(12, 7)) # Apre una NUOVA finestra/figura separata
+
+for i in range(num_file):
+    x_data = x_lista[i]
+    
+    # Calcolo del corpo nero teorico puro per la temperatura di questo file
+    # Uso T_fit[i] o T_fit[i]**0.25 a seconda di come hai scalato la T nel fit
+    y_filter = somma_sigmoidi(x_data, *s_fit)
+    
+    plt.plot(x_data, y_filter, lw=2.5, label=f'Filtro')
+
+#plt.xscale('log')
+#plt.yscale('log')
+plt.title('Filtro stimato')
+plt.xlabel('Wavelength (nm)')
+plt.ylabel('Response')
+plt.legend(loc='upper right', fontsize='small')
+plt.grid(True, which="both", linestyle='--', alpha=0.5)
+plt.tight_layout()
+
 plt.show()
+

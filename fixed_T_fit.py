@@ -23,19 +23,24 @@ def somma_sigmoidi(x, *parametri_sigmoidi):
         filtro += a * (1.0 + erf((x - lam_cut) / s))
     return filtro
 
-def teorical_model(x, T4, A, *s):
+def black_body(x, A, T):
     """
-    Modello teorico: Legge di Planck (Corpo Nero) * Filtro a Sigmoidi
+    Modello teorico: Legge di Planck (Corpo Nero)
     """
     lam = x * 1e-9 
     h, c_vel, kB = 6.62607015e-34, 299792458, 1.380649e-23
     
-    exponent = (h * c_vel) / (lam * kB * T4**0.25)
+    exponent = (h * c_vel) / (lam * kB * T)
     exponent = np.clip(exponent, None, 7000) 
     planck = (2 * h * c_vel**2) / (lam**5 * (np.exp(exponent) - 1))
-    
+    return A * planck
+
+def teorical_model(x, T, A, *s):
+    """
+    Modello teorico: Legge di Planck (Corpo Nero) * Filtro a Sigmoidi
+    """    
     filtro = somma_sigmoidi(x, *s)
-    return A * planck * filtro
+    return black_body(x, A, T) * filtro
 
 def loss_function_1_file(file_params, x, y):
     """
@@ -44,7 +49,7 @@ def loss_function_1_file(file_params, x, y):
     y_pred = teorical_model(x, *file_params)
     return np.sum((y - y_pred) ** 2)
 
-def loss_function(params, batch_x, batch_y):
+def loss_function(params, T_array, batch_x, batch_y):
     """
     Funzione di costo globale per il fit simultaneo (T libere ottimizzate).
     """
@@ -52,9 +57,9 @@ def loss_function(params, batch_x, batch_y):
     num_file = len(batch_x)
     
     # Spacchettamento coerente con il vettore stima_iniziale
-    T_array = params[:num_file]           # Le prime 'num_file' posizioni sono le temperature
-    A = params[num_file]                  # Poi c'è l'Ampiezza A comune
-    sigmoidi = params[num_file+1:]        # Tutto il resto sono le sigmoidi comuni
+    #T_array = params[:num_file]           # Le prime 'num_file' posizioni sono le temperature
+    A = params[0]                  # Poi c'è l'Ampiezza A comune
+    sigmoidi = params[1:]        # Tutto il resto sono le sigmoidi comuni
     
     for i in range(num_file):
         # Ricostruiamo i parametri per il file i-esimo: [T_i, A, s1, s2...]
@@ -196,8 +201,8 @@ num_file = len(x_lista)
 # =============================================================================
 # 3. COSTRUZIONE VETTORE DI STIMA INIZIALE E OTTIMIZZAZIONE
 # =============================================================================
-p0_T = np.power(T_lista, 4).tolist()
-p0_A = [1e-9]       # Guess ampiezza comune
+#p0_T = np.power(T_lista, 4).tolist()
+p0_A = [5e-7]       # Guess ampiezza comune
 p0_sigmoide = (
 [1.0]+[640.0]+[1.0]+
 [1.0]+[660.0]+[1.0]+
@@ -206,13 +211,13 @@ p0_sigmoide = (
 ) * 3
 
 # Mega-vettore: [T1, T2, ..., Tn, A, s1, s2, ...]
-stima_iniziale = p0_T + p0_A + p0_sigmoide
+stima_iniziale = p0_A + p0_sigmoide
 
 print("\nAvvio dell'ottimizzazione globale. Attendere...")
 result = minimize(
     loss_function, 
     stima_iniziale, 
-    args=(x_lista, y_lista), 
+    args=(T_lista, x_lista, y_lista), 
     method='Powell'
 )
 
@@ -227,15 +232,15 @@ print(f"Messaggio:        {result.message}")
 print("-"*50)
 
 # Estrazione corretta usando gli indici del mega-vettore fittato
-T_fit = result.x[:num_file]
-A_fit = result.x[num_file]
-s_fit = result.x[num_file+1:]
+#T_fit = result.x[:num_file]
+A_fit = result.x[0]
+s_fit = result.x[1:]
 
 print(f"--- PARAMETRI FISICI CONDIVISI ---")
 print(f"Ampiezza (A):       {A_fit:.8e}")
 print(f"--- TEMPERATURE (Guess iniziale vs Ottimizzate) ---")
 for i in range(num_file):
-    print(f"File {file_validi[i]}: R = {r_lista[i]:.2f} Ohm | Guess T = {T_lista[i]:.1f} K -> Fit T = {T_fit[i]**0.25:.1f} K")
+    print(f"File {file_validi[i]}: R = {r_lista[i]:.2f} Ohm | Guess T = {T_lista[i]:.1f} K")# -> Fit T = {T_fit[i]**0.25:.1f} K")
 
 print(f"\n--- PARAMETRI SIGMOIDI ({len(s_fit) // 3} componenti) ---")
 print(f"{'Sigmoide':<10} | {'Peso (a)':<12} | {'Taglio (lam)':<12} | {'Larghezza (σ)':<12}")
@@ -263,22 +268,68 @@ print("="*50 + "\n")
 # =============================================================================
 # 5. GRAPHIC PLOT
 # =============================================================================
-plt.figure(figsize=(12, 7))
 
 for i in range(num_file):
+    plt.figure(figsize=(12, 7))
     x_data = x_lista[i]
     y_data = y_lista[i]
     
     # Costruiamo il vettore parametri specifico per l'i-esimo file usando la T fittata
-    params_file = [T_fit[i], A_fit] + list(s_fit)
+    params_file = [T_lista[i], A_fit] + list(s_fit)
     
     plt.scatter(x_data, y_data, alpha=0.4, label=f'Dati {file_validi[i]}')
-    plt.plot(x_data, teorical_model(x_data, *params_file), lw=2, label=f'Fit T={T_fit[i]**0.25:.1f}K', color='black')
+    plt.plot(x_data, teorical_model(x_data, *params_file), lw=2, label=f'Fit T={T_lista[i]:.1f}K', color='black')
 
-plt.title('Batch Fit simultaneo (Temperature Libere da Guess R-T)')
+#plt.xscale('log')
+#plt.yscale('log')
+
+    plt.title('Batch Fit simultaneo (Temperature Libere da Guess R-T)')
+    plt.xlabel('Wavelength (nm)')
+    plt.ylabel('Intensity')
+    plt.legend(loc='upper right', fontsize='small', ncol=2)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+
+plt.figure(figsize=(12, 7)) # Apre una NUOVA finestra/figura separata
+
+for i in range(num_file):
+    x_data = x_lista[i]
+    
+    # Calcolo del corpo nero teorico puro per la temperatura di questo file
+    # Uso T_fit[i] o T_fit[i]**0.25 a seconda di come hai scalato la T nel fit
+    y_black_body = black_body(x_data, A_fit, T_lista[i])
+    area = np.trapz(y_black_body)
+    #y_black_body /= area
+    
+    plt.plot(x_data, y_black_body, lw=2.5, label=f'Corpo Nero Puro T={T_lista[i]:.1f}K')
+
+#plt.xscale('log')
+#plt.yscale('log')
+plt.title('Spettro Teorico del Corpo Nero Puro (Senza Risposta Strumentale)')
 plt.xlabel('Wavelength (nm)')
-plt.ylabel('Intensity')
-plt.legend(loc='upper right', fontsize='small', ncol=2)
-plt.grid(True, linestyle='--', alpha=0.5)
+plt.ylabel('Theoretical Intensity')
+plt.legend(loc='upper right', fontsize='small')
+plt.grid(True, which="both", linestyle='--', alpha=0.5)
 plt.tight_layout()
+
+plt.figure(figsize=(12, 7)) # Apre una NUOVA finestra/figura separata
+
+for i in range(num_file):
+    x_data = x_lista[i]
+    
+    # Calcolo del corpo nero teorico puro per la temperatura di questo file
+    # Uso T_fit[i] o T_fit[i]**0.25 a seconda di come hai scalato la T nel fit
+    y_filter = somma_sigmoidi(x_data, *s_fit)
+    
+    plt.plot(x_data, y_filter, lw=2.5, label=f'Filtro')
+
+#plt.xscale('log')
+#plt.yscale('log')
+plt.title('Filtro stimato')
+plt.xlabel('Wavelength (nm)')
+plt.ylabel('Response')
+plt.legend(loc='upper right', fontsize='small')
+plt.grid(True, which="both", linestyle='--', alpha=0.5)
+plt.tight_layout()
+
 plt.show()
