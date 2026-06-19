@@ -25,11 +25,12 @@ def find_common_prefix(strings):
 
 def main():
     if len(sys.argv) < 2:
-        print("\nUso dello script Batch Operations (8-in-1):")
+        print("\nUso dello script Batch Operations (9-in-1):")
         print("  python batch_operations.py -s <pattern_samples> [operazione] <parametro/file> [opzioni]")
         print("\nOperazioni disponibili (sceglierne una):")
         print("  -base <file_back>      Riscalamento locale + Sottrazione automatica su finestra -> OUT: sample_BASE_CORRECTED_BY_back.csv")
-        print("  -sub  <file_back>      Sottrazione pura -> OUT: sample_MINUS_back.csv")
+        print("  -sub  <file_back>      Sottrazione pura (Asse X completo coordinato) -> OUT: sample_MINUS_back.csv")
+        print("  -subb <file_back>      Sottrazione pura BIN-A-BIN (No Interp, ottimo per rumore CCD) -> OUT: sample_MINUSBIN_back.csv")
         print("  -m    <file_molt>      Moltiplicazione pura -> OUT: sample_TIMES_molt.csv")
         print("  -f    <file_filtro>    Filtro con interpolazione -> OUT: sample_FILTERED_BY_filtro.csv")
         print("  -res  <file_rif>       Riscalamento locale puro -> OUT: sample_RESCALED_TO_rif.csv")
@@ -43,7 +44,7 @@ def main():
         print("\nOpzioni Globali (Opzionali):")
         print("  -o <cartella>          Specifica una cartella di destinazione personalizzata")
         print("  --raw                  Esclude i file *-raw*.csv da QUALSIASI operazione")
-        print("  --relax                Interpola l'operatore sull'asse del campione (senza estrapolare) se disallineati")
+        print("  --relax                Interpola l'operatore sull'asse del campione (senza estrapolare) se disallineati [Ignorato in -subb]")
         sys.exit(1)
 
     argomenti = sys.argv[1:]
@@ -60,7 +61,7 @@ def main():
     second_param = None
 
     operazioni_lista = [
-        ('-base', 'base'), ('-sub', 'sub'), ('-m', 'm'), 
+        ('-base', 'base'), ('-sub', 'sub'), ('-subb', 'subb'), ('-m', 'm'), 
         ('-f', 'f'), ('-res', 'res'), ('-sm', 'sm'), 
         ('-avg', 'avg'), ('-norm', 'norm')
     ]
@@ -130,7 +131,7 @@ def main():
     if '-s' in argomenti:
         idx_s = argomenti.index('-s')
         for arg in argomenti[idx_s + 1:]:
-            stop_conditions = ['-base', '-sub', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', '--relax', custom_output_dir]
+            stop_conditions = ['-base', '-sub', '-subb', '-m', '-f', '-res', '-sm', '-avg', '-norm', '-w', '-rwn', '-b', '-o', '--raw', '--relax', custom_output_dir]
             if second_param:
                 stop_conditions.append(second_param)
             if arg in stop_conditions:
@@ -191,10 +192,10 @@ def main():
         second_name_no_ext = os.path.splitext(os.path.basename(second_param))[0]
 
     print("\n" + "="*60)
-    print(f" AVVIO ELABORAZIONE BATCH (8-in-1)")
+    print(f" AVVIO ELABORAZIONE BATCH (9-in-1)")
     print(f" Modalita Operativa:   {mode.upper()}")
     print(f" Filtro globale --raw: {'ATTIVO (cerca *-raw*.csv)' if exclude_raw else 'DISATTIVO'}")
-    print(f" Gestione Assi X:      {'RELAX (Interpolazione senza estrapolazione)' if relax_axis else 'RIGIDA (Coincidenza esatta)'}")
+    print(f" Gestione Assi X:      {'PURAMENTE GEOMETRICA (Bin-to-Bin)' if mode == 'subb' else ('RELAX (Interpolazione)' if relax_axis else 'RIGIDA (Coincidenza esatta)')}")
     if mode == 'sm':
         print(f" Scalare impostato:    {scalar_value}")
     elif mode in ['avg', 'norm']:
@@ -207,7 +208,7 @@ def main():
     print(f" Destinazione Output:  {custom_output_dir if custom_output_dir else 'Stessa cartella dei sorgenti'}")
     print("="*60 + "\n")
 
-    # PRE-CALCOLI PER INTERPOLAZIONE
+    # PRE-CALCOLI PER INTERPOLAZIONE (Solo per i metodi che lo richiedono)
     if mode == 'f':
         funzione_filtro = interp1d(df_2['Wavelength (nm)'].values, df_2['Intensity'].values, kind='linear', bounds_error=False, fill_value=np.nan)
     elif mode in ['sub', 'm', 'res', 'base'] and relax_axis:
@@ -335,25 +336,35 @@ def main():
                 suffix = f"_TIMES_SCALAR_{second_param}.csv"
                 output_filename = f"{sample_name_no_ext}{suffix}"
                 
-            elif mode in ['sub', 'm', 'res', 'base']:
+            elif mode in ['sub', 'subb', 'm', 'res', 'base']:
                 check_lunghezza = len(df_s) == len(df_2)
-                check_bins = np.array_equal(df_s['Bin'].values, df_2['Bin'].values) if check_lunghezza else False
-                check_nm = np.allclose(df_s['Wavelength (nm)'].values, df_2['Wavelength (nm)'].values, atol=1e-4) if check_lunghezza else False
-                check_cm = np.allclose(df_s['Relative Wavenumber (cm-1)'].values, df_2['Relative Wavenumber (cm-1)'].values, atol=1e-2) if check_lunghezza else False
                 
-                assi_coincidenti = check_bins and check_nm and check_cm
+                if mode == 'subb':
+                    # Logica -subb: Esige tassativamente uguale numero di righe/pixel hardware. Nessuna interpolazione.
+                    if not check_lunghezza:
+                        motivo = f"Incompatibile: numero di pixel CCD differente ({len(df_s)} vs {len(df_2)} del background)"
+                        file_saltati[sample_full_name] = motivo
+                        print(f"   [SALTATO] {sample_full_name}: {motivo}")
+                        continue
+                    assi_coincidenti = True  # Per far scattare l'estrazione pura dell'array senza percorsi alternativi
+                else:
+                    check_bins = np.array_equal(df_s['Bin'].values, df_2['Bin'].values) if check_lunghezza else False
+                    check_nm = np.allclose(df_s['Wavelength (nm)'].values, df_2['Wavelength (nm)'].values, atol=1e-4) if check_lunghezza else False
+                    check_cm = np.allclose(df_s['Relative Wavenumber (cm-1)'].values, df_2['Relative Wavenumber (cm-1)'].values, atol=1e-2) if check_lunghezza else False
+                    assi_coincidenti = check_bins and check_nm and check_cm
 
-                if not assi_coincidenti and not relax_axis:
-                    motivo = "Assi X non coincidenti col riferimento (Usa --relax se vuoi forzare l'allineamento)"
-                    file_saltati[sample_full_name] = motivo
-                    print(f"   [SALTATO] {sample_full_name}: {motivo}")
-                    continue
+                    if not assi_coincidenti and not relax_axis:
+                        motivo = "Assi X non coincidenti col riferimento (Usa --relax se vuoi forzare l'allineamento)"
+                        file_saltati[sample_full_name] = motivo
+                        print(f"   [SALTATO] {sample_full_name}: {motivo}")
+                        continue
 
                 df_output = df_s[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
                 
                 if not assi_coincidenti and relax_axis:
                     intensita_operatore_interp = funzione_operatore(df_s['Wavelength (nm)'].values)
                 else:
+                    # In modalità -subb passa direttamente da qui, prendendo i valori raw bin-a-bin
                     intensita_operatore_interp = df_2['Intensity'].values
 
                 if mode in ['res', 'base']:
@@ -395,6 +406,10 @@ def main():
                 if mode == 'sub':
                     df_output['Intensity'] = df_s['Intensity'].values - intensita_operatore_interp
                     suffix = f"_MINUS_{second_name_no_ext}.csv"
+                elif mode == 'subb':
+                    # SOTTRAZIONE VETTORIALE PURA SENZA ALCUNA INTERPOLAZIONE OTTICA
+                    df_output['Intensity'] = df_s['Intensity'].values - intensita_operatore_interp
+                    suffix = f"_MINUSBIN_{second_name_no_ext}.csv"
                 elif mode == 'm':
                     df_output['Intensity'] = df_s['Intensity'].values * intensita_operatore_interp
                     suffix = f"_TIMES_{second_name_no_ext}.csv"
@@ -404,10 +419,9 @@ def main():
                 elif mode == 'base':
                     baseline_riscalata = intensita_operatore_interp / k_factor
                     df_output['Intensity'] = df_s['Intensity'].values - baseline_riscalata
-                    # AGGIORNATO: cita espressamente il file operatore nel nome output
                     suffix = f"_BASE_CORRECTED_BY_{second_name_no_ext}.csv"
 
-                if not assi_coincidenti and relax_axis:
+                if not assi_coincidenti and relax_axis and mode != 'subb':
                     df_output = df_output.dropna(subset=['Intensity'])
                     if df_output.empty:
                         motivo = "Spettro azzerato dopo il troncamento: nessuna regione X in comune con l'operatore"
@@ -418,7 +432,7 @@ def main():
                 output_filename = f"{sample_name_no_ext}{suffix}"
 
             elif mode == 'f':
-                intensita_filtro_interpolata = function_filtro(df_s['Wavelength (nm)'].values) if 'function_filtro' in locals() else funzione_filtro(df_s['Wavelength (nm)'].values)
+                intensita_filtro_interpolata = funzione_filtro(df_s['Wavelength (nm)'].values)
                 df_output = df_s[['Bin', 'Wavelength (nm)', 'Relative Wavenumber (cm-1)']].copy()
                 df_output['Intensity'] = df_s['Intensity'].values * intensita_filtro_interpolata
                 df_output = df_output.dropna(subset=['Intensity'])

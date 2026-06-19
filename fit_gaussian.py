@@ -67,7 +67,7 @@ def somma_sigmoidi(x, *parametri_sigmoidi):
         
     return filtro
 
-def teorical_model(x, A, T, a, lam_cut1, sigma1, d, lam_cut2, sigma2, *c):
+def teorical_model(x, A, T, *s):
     lam = x * 1e-9 
     h, c_vel, kB = 6.62607015e-34, 299792458, 1.380649e-23
     
@@ -76,21 +76,22 @@ def teorical_model(x, A, T, a, lam_cut1, sigma1, d, lam_cut2, sigma2, *c):
     exponent = np.clip(exponent, None, 7000) 
     planck = (2 * h * c_vel**2) / (lam**5 * (np.exp(exponent) - 1))
     # 2. Polinomio di correzione della risposta
-    polinomio = polinomio_risposta(x, 650, *c)
+    #polinomio = polinomio_risposta(x, 650, *c)
     
     # 3. Doppia Sigmoide (I due gradini di salita)
     # Protezione contro divisioni per zero o numeri negativi
-    s1 = np.where(sigma1 <= 0, 1e-5, sigma1)
-    s2 = np.where(sigma2 <= 0, 1e-5, sigma2)
+    #s1 = np.where(sigma1 <= 0, 1e-5, sigma1)
+    #s2 = np.where(sigma2 <= 0, 1e-5, sigma2)
     
-    filtro = a * (1.0 + erf((x - lam_cut1) / s1)) + d * (1.0 + erf((x - lam_cut2)/ s2))
-    return A * planck * polinomio * filtro
+    #filtro = a * (1.0 + erf((x - lam_cut1) / s1)) + d * (1.0 + erf((x - lam_cut2)/ s2))
+    filtro = somma_sigmoidi(x, *s)
+    return A * planck * filtro
 
 # 3. Definiamo la stima iniziale (CORRETTA A 13 PARAMETRI)
 # Associazioni:  [  A,     T,    c0,  c1,  c2,  c3,   a,  lam_cut1, sigma1,  d,  lam_cut2, sigma2]
 # NOTA: Visto che la Planck sputa numeri nell'ordine di 10^11 o 10^12 in questa regione, 
 # la costante di ampiezza 'A' deve essere piccolissima (es. 1e-9 o meno) per ridimensionarla su intensità umane (~250).
-p0_fisici = [4e-5, 1500]
+p0_fisici = [1e-4, 1850]
 
 # 19 coefficienti del polinomio (c0=1, tutti gli altri a 0)
 #p0_polinomio = ( [7.22445624e-03] + [2.22332308e-06] + [3.52642101e-04] \
@@ -99,11 +100,25 @@ p0_fisici = [4e-5, 1500]
 #                     + [1.38289741e-14] + [-2.79311248e-16] + [-1.01137092e-17] + [-6.18714586e-20] \
 #                     + [3.28495398e-21] + [ 8.70851129e-23] + [-1.96293714e-25] + [-5.05919894e-26] \
 #                     + [5.01323391e-28] + [0.0] * 5)
-p0_polinomio = [1.0]
-p0_sigmoide = [0.28, 646.0, 10.0, 0.2, 680, 10.0]
+p0_sigmoide = (
+[2.81795455e-01]+
+[6.71590811e+02]+
+[2.37851496e+00]+
+[1.66746872e-01]+
+[6.74198972e+02]+
+[1.20510600e+00]+
+[1.58636279e-01]+
+[6.50588592e+02]+
+[8.24989403e+00]+
+[4.06734948e-01]+
+[6.57457611e+02]+
+[3.87478705e+00]
+)
+
+#[0.25, 6.55e+02, 6.0] * 4# 0.25, 6.68695e+02, 4.0, 0.24, 6.58e+02, 4.0, 0.25, 6.526e+02, 4.0] #+ [1.0, 648, 4.0] + [1.0, 660, 2.0]
 
 #stima_iniziale = [4.23867098e-05]+[2.14134393e+03]+[2.82578220e-01]+[6.58622002e+02]+[2.38970827e+01]+[2.82578136e-01]
-stima_iniziale = p0_fisici + p0_sigmoide + p0_polinomio
+stima_iniziale = p0_fisici + p0_sigmoide
 
 # Generiamo i punti X per le curve fluide
 x_plot = np.linspace(min(x_data), max(x_data), 500)
