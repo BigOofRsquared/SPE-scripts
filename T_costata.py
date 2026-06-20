@@ -10,6 +10,19 @@ import argparse
 import re
 from scipy.interpolate import interp1d
 
+#def somma_gaussiane(x, *parametri_sigmoidi):
+#    """
+#    Calcola la somma di N sigmoidi (basate sulla funzione di errore 'erf').
+#    """
+#    filtro = np.zeros_like(x, dtype=float)
+#    for i in range(0, len(parametri_sigmoidi), 3):
+#        a = parametri_sigmoidi[i]
+#        lam_centro = parametri_sigmoidi[i+1]
+#        sigma = parametri_sigmoidi[i+2]
+#        s = np.where(sigma <= 0, 2e-1, sigma)
+#        filtro += a * np.exp((x-lam_centro)**2 / )
+#    return filtro
+
 def somma_sigmoidi(x, *parametri_sigmoidi):
     """
     Calcola la somma di N sigmoidi (basate sulla funzione di errore 'erf').
@@ -19,7 +32,7 @@ def somma_sigmoidi(x, *parametri_sigmoidi):
         a = parametri_sigmoidi[i]
         lam_cut = parametri_sigmoidi[i+1]
         sigma = parametri_sigmoidi[i+2]
-        s = np.where(sigma <= 0, 8e-1, sigma)
+        s = np.where(sigma <= 0, 2, sigma)
         filtro += a * (1.0 + erf((x - lam_cut) / s))
     return filtro
 
@@ -209,31 +222,31 @@ y_average2 = np.power(y_average, 2)
 # 3. COSTRUZIONE VETTORE DI STIMA INIZIALE E OTTIMIZZAZIONE
 # =============================================================================
 p0_T = T_lista
-p0_A = [7e-7]       # Guess ampiezza comune
+p0_A = [3e-7]       # Guess ampiezza comune
 p0_sigmoide = (
-[0.2]+[630.0]+[1.0]+
-[0.2]+[635.0]+[1.0]+
-[0.2]+[645.0]+[1.0]+
-[0.2]+[650.0]+[1.0]
-) + (
+#[0.2]+[630.0]+[5.0]+
+#[0.2]+[635.0]+[5.0]+
+#[0.2]+[645.0]+[5.0]+
+#[0.2]+[650.0]+[5.0]
+#) + (
 [1.0]+[640.0]+[1.0]+
-[2.0]+[660.0]+[1.0]+
-[2.0]+[672.0]+[1.0]+
+[1.0]+[660.0]+[1.0]+
+[1.0]+[672.0]+[1.0]+
 [1.0]+[690.0]+[1.0]
-) + (
-[ 0.2]+[675.0]+[1.0]+
-[-0.2]+[680.0]+[1.0]+
-[ 0.2]+[685.0]+[1.0]+
-[-0.2]+[690.0]+[1.0]+
-[ 0.2]+[695.0]+[1.0]+
-[-0.2]+[700.0]+[1.0]#+
-#[ 0.2]+[705.0]+[1.0]+
-#[-0.2]+[710.0]+[1.0]+
+) * 3 # + (
+#[ 0.2]+[679.0]+[2.0]+
+#[-0.2]+[681.0]+[2.0]+
+#[ 0.2]+[683.0]+[2.0]+
+#[-0.2]+[685.0]+[2.0]+
+#[ 0.2]+[688.0]+[2.0]+
+#[-0.2]+[690.0]+[2.0]+
+#[ 0.2]+[791.0]+[1.0]+
+#[-0.2]+[793.0]+[1.0]+
 #[ 0.2]+[695.0]+[1.0]+
 #[-0.2]+[700.0]+[1.0]+
 #[ 0.2]+[705.0]+[1.0]+
 #[-0.2]+[710.0]+[1.0]
-)
+#)
 
 
 # Mega-vettore: [T1, T2, ..., Tn, A, s1, s2, ...]
@@ -313,7 +326,7 @@ y_filtro_esportazione = somma_sigmoidi(x_uniforme, *s_fit)
 # Creiamo il DataFrame coerente con le colonne standard
 df_filtro = pd.DataFrame({
     "Wavelength (nm)": x_uniforme,
-    "Estimated_Filter_Response": y_filtro_esportazione
+    "Intensity": y_filtro_esportazione
 })
 
 nome_file_output = "filtro_stimato_passo_0.1nm.csv"
@@ -327,6 +340,14 @@ print(f"Numero totale di punti esportati: {len(x_uniforme)}")
 print(f"[SUCCESS] File salvato in:")
 print(f"--> {os.path.abspath(nome_file_output)}")
 print("="*50 + "\n")
+
+# =============================================================================
+# 6. STAMPA COLONNA TEMPERATURE E TENSIONI FITTATE
+# =============================================================================
+print("--- TEMPERATURE FITTATE vs TENSIONE ---")
+for i, t in enumerate(T_fit):
+    print(f"{t:.1f} K --> {v_lista[i]:.1f} V")
+print("-" * 39 + "\n")
 
 # =============================================================================
 # 5. GRAPHIC PLOT (LOG-LOG SCALE)
