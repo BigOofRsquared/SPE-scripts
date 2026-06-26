@@ -5,29 +5,48 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
+from scipy.optimize import minimize
 
 # =============================================================================
-# 1. DEFINIZIONE DEL MODELLO FISICO
+# 1. MODELLO FISICO REALE (Radiazione T^4 fissa + Conducibilità Variabile)
 # =============================================================================
-def modello_potenza(T, A, B, T0=300.0):
+def modello_lampadina_reale(T, A, B1, B2, T0=300.0):
     """
-    Modello di potenza dissipata: P = A*(T^4) - B*(T - T0)
-    T0 è fissato di default a temperatura ambiente (300 K), 
-    ma può essere lasciato come parametro libero se necessario.
+    P = A*(T^4 - T0^4) + B1*(T - T0) - B2*(T - T0)^2
+    - Radiazione netta verso la stanza bloccata a T^4.
+    - Conduzione/Convezione con correzione al secondo ordine (k decrescente con T).
     """
-    return A * (T**4) - B * (T - T0)
+    P_rad = A * (T**4 - T0**4)
+    P_cond = B1 * (T - T0) - B2 * (T - T0)**2
+    return P_rad + P_cond
 
 # =============================================================================
-# 2. GESTIONE ARGOMENTI DA TERMINALE
+# 2. FUNZIONE COSTO CON PENALIZZAZIONE RIGIDA (BARRIERA PER POWELL)
+# =============================================================================
+def loss_function_powell(params, T_dati, P_dati, T0):
+    A, B1, B2 = params
+    
+    # Vincoli fisici: A >= 0, B1 >= 0, B2 >= 0
+    # Se l'algoritmo esce dai bordi, restituiamo un valore enorme (infinito)
+    if A < 0.0 or B1 < 0.0 or B2 < 0.0:
+        return np.inf
+        
+    P_pred = modello_lampadina_reale(T_dati, A, B1, B2, T0=T0)
+    
+    # Pesiamo sui residui relativi percentuali per non schiacciare la bassa temperatura
+    residui = (P_pred - P_dati) / np.maximum(P_dati, 1e-3)
+    return np.sum(residui**2)
+
+# =============================================================================
+# 3. GESTIONE ARGOMENTI
 # =============================================================================
 def gestisci_argomenti():
     parser = argparse.ArgumentParser(
-        description="Fit della potenza in funzione della temperatura: P = A*(T^4) - B*(T - T0)"
+        description="Fit Lampadina tramite metodo Powell con iterazioni massime."
     )
     parser.add_argument(
         '-i', '--input', type=str, required=True, 
-        help="File di testo/dat contenente le Temperature (colonna 1) e Potenze (colonna 2)"
+        help="File dei dati (Colonna 1: T [K], Colonna 2: P [W])"
     )
     parser.add_argument(
         '--t0', type=float, default=300.0, 
@@ -36,99 +55,110 @@ def gestisci_argomenti():
     return parser.parse_args()
 
 # =============================================================================
-# 3. SCRIPT PRINCIPALE
+# 4. MAIN SCRIPT
 # =============================================================================
 def main():
     args = gestisci_argomenti()
     
     if not os.path.exists(args.input):
-        print(f"Errore: Il file di input '{args.input}' non esiste.")
+        print(f"Errore: Il file '{args.input}' non esiste.")
         sys.exit(1)
         
-    print(f"[INFO] Caricamento dati da: {args.input}")
-    
-    # Caricamento del file (gestisce spazi multipli o tabulazioni, ignora i commenti '#')
     try:
         df = pd.read_csv(args.input, sep=r"\s+", header=None, comment='#')
         data = df.to_numpy()
-        
-        T_dati = data[:, 0]  # Prima colonna: Temperatura (K)
-        P_dati = data[:, 1]  # Seconda colonna: Potenza (W)
+        T_dati = data[:, 0]  
+        P_dati = data[:, 1]  
     except Exception as e:
-        print(f"Errore durante la lettura del file: {e}")
+        print(f"Errore lettura file: {e}")
         sys.exit(1)
         
-    print(f"[INFO] Caricati con successo {len(T_dati)} punti sperimentali.")
+    print(f"[INFO] Caricati {len(T_dati)} punti sperimentali.")
 
     # =============================================================================
-    # 4. FITTING DEI DATI
+    # 5. OTTIMIZZAZIONE CON METODO POWELL E ITERAZIONI MASSIME
     # =============================================================================
-    # Stime iniziali (p0) per i parametri [A, B]
-    # A è legato a Stefan-Boltzmann (ordine tipico molto piccolo, es. 1e-12 o 1e-10)
-    # B è legato alle perdite lineari (ordine tipico 1e-3 o 1e-2)
-    p0 = [1e-11, 1e-3]
+    # Guess iniziali stabili
+    p0 = [1e-12, 1e-3, 1e-7]
     
-    # Definiamo i limiti fisici: A e B devono essere rigorosamente positivi
-    bounds = ((0, 0), (np.inf, np.inf))
+    print(f"[INFO] Avvio ottimizzazione tramite metodo POWELL (maxiter={sys.maxsize})...")
     
-    print("[INFO] Avvio del fit non-lineare dei minimi quadrati...")
-    try:
-        # Fissiamo T0 nel fit usando una lambda function lambda T, A, B: modello(T, A, B, T0)
-        popt, pcov = curve_fit(
-            lambda T, A, B: modello_potenza(T, A, B, T0=args.t0), 
-            T_dati, 
-            P_dati, 
-            p0=p0,
-            bounds=bounds
-        )
-        A_fit, B_fit = popt
-        perr = np.sqrt(np.diag(pcov)) # Errori standard sui parametri fittati
-    except Exception as e:
-        print(f"Errore durante l'ottimizzazione del fit: {e}")
-        sys.exit(1)
+    res = minimize(
+        loss_function_powell, 
+        p0, 
+        args=(T_dati, P_dati, args.t0), 
+        method='Powell', 
+        options={
+            'maxiter': sys.maxsize,  # Massimo numero di iterazioni possibili sul sistema
+            'maxfev': sys.maxsize,    # Massimo numero di valutazioni della funzione costo
+            'xtol': 1e-15,            # Tolleranza di convergenza sui parametri
+            'ftol': 1e-15             # Tolleranza di convergenza sulla loss
+        }
+    )
+    
+    if not res.success:
+        print(f"[WARNING] L'ottimizzatore ha terminato con messaggio: {res.message}")
+    else:
+        print(f"[INFO] Ottimizzazione completata con successo in {res.nit} iterazioni.")
+    
+    A_fit, B1_fit, B2_fit = res.x
 
-    # Stampa dei risultati sul terminale
-    print("\n" + "="*50)
-    print(f"{'RISULTATI DEL FIT DELLA POTENZA':^50}")
-    print("="*50)
-    print(f"Modello fittato: P = A*(T^4) - B*(T - {args.t0:.1f})")
-    print("-"*50)
-    print(f"Parametro A (Irradiamento): {A_fit:.6e} ± {perr[0]:.6e}")
-    print(f"Parametro B (Conduzione):   {B_fit:.6e} ± {perr[1]:.6e}")
-    print("="*50 + "\n")
+    # Calcolo incertezze dall'Hessiana numerica (Powell non la calcola nativamente)
+    # Usiamo una matrice di zeri se non disponibile per non rompere il plot
+    perr = np.zeros(3)
+    if hasattr(res, 'hess_inv') and res.hess_inv is not None:
+        try:
+            cov = res.hess_inv if isinstance(res.hess_inv, np.ndarray) else res.hess_inv.todense()
+            varianza_residui = res.fun / (len(T_dati) - 3)
+            perr = np.sqrt(np.diag(cov) * varianza_residui)
+        except Exception:
+            perr = [np.nan, np.nan, np.nan]
+
+    print(f"\nRisultati del Fit (Powell, T^4 fisso):")
+    print(f"  A (Coeff. Radiativo): {A_fit:.6e}")
+    print(f"  B1 (Cond. Lineare):   {B1_fit:.6e}")
+    print(f"  B2 (Rettifica k):     {B2_fit:.6e}")
 
     # =============================================================================
-    # 5. GRAFICO DEI RISULTATI
+    # 6. PLOTTING
     # =============================================================================
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(8, 6))
     
-    # Plotta i punti sperimentali
-    plt.scatter(T_dati, P_dati, color='red', alpha=0.7, edgecolors='k', label='Dati Sperimentali', zorder=3)
+    plt.scatter(T_dati, P_dati, color='blue', alpha=0.7, s=50, label='Dati Sperimentali', zorder=3)
     
-    # Genera una curva fitta e continua per il modello teorico
-    T_teorico = np.linspace(np.min(T_dati)*0.9, np.max(T_dati)*1.1, 500)
-    P_teorico = modello_potenza(T_teorico, A_fit, B_fit, T0=args.t0)
+    T_teorico = np.linspace(min(T_dati) - 20, max(T_dati) + 20, 500)
+    P_teorico = modello_lampadina_reale(T_teorico, A_fit, B1_fit, B2_fit, T0=args.t0)
     
-    plt.plot(T_teorico, P_teorico, color='black', lw=2.5, label='Modello Fittato')
+    plt.plot(T_teorico, P_teorico, color='grey', linestyle='-.', lw=1.5, label='Fit Metodo Powell', zorder=2)
     
-    # Separazione grafica dei singoli contributi (opzionale, utile per l'analisi fisica)
-    P_radiazione = A_fit * (T_teorico**4)
-    P_conduzione = - B_fit * (T_teorico - args.t0)
-    plt.plot(T_teorico, P_radiazione, '--', color='blue', alpha=0.5, label='Componente Radiativa ($A \cdot T^4$)')
-    plt.plot(T_teorico, P_conduzione, '--', color='green', alpha=0.5, label='Componente Lineare ($-B \cdot (T-T_0)$)')
+    # Componenti separate
+    P_rad = A_fit * (T_teorico**4 - args.t0**4)
+    P_cond = B1_fit * (T_teorico - args.t0) - B2_fit * (T_teorico - args.t0)**2
+    
+    plt.plot(T_teorico, P_rad, '--', color='red', alpha=0.5, label='Radiazione Netta ($T^4$)')
+    plt.plot(T_teorico, P_cond, '--', color='green', alpha=0.5, label='Conduzione/Convezione $k(T)$')
 
-    # Labelling e abbellimenti assi
-    plt.title('Fit della Potenza Dissipata vs Temperatura del Filamento')
-    plt.xlabel('Temperatura $T$ (K)')
-    plt.ylabel('Potenza $P$ (W)')
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.legend(loc='upper left', fontsize='medium')
+    testo_box = (
+        rf"$A$ = {A_fit:.2e}" + "\n" +
+        rf"$B_1$ = {B1_fit:.2e}" + "\n" +
+        rf"$B_2$ = {B2_fit:.2e}"
+    )
+    plt.text(
+        min(T_dati) + (max(T_dati) - min(T_dati)) * 0.05,
+        max(P_dati) * 0.75,
+        testo_box,
+        fontsize=14,
+        color="darkblue",
+        bbox=dict(facecolor="white", alpha=0.8, edgecolor="gray"),
+        zorder=5
+    )
+
+    plt.xlabel("Filament Temperature $T$ (K)", fontsize=20)
+    plt.ylabel("Dissipated Power $P$ (W)", fontsize=20)
+    plt.tick_params(axis='both', labelsize=15)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend(loc='lower right', fontsize=12)
     plt.tight_layout()
-    
-    # Salvataggio del grafico come immagine
-    #nome_grafico = "fit_potenza_temperatura.png"
-    #plt.savefig(nome_grafico, dpi=300)
-    #print(f"[INFO] Grafico salvato in: {os.path.abspath(nome_grafico)}")
     
     plt.show()
 
