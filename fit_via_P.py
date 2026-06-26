@@ -58,7 +58,7 @@ def loss_function_masked_jit(params, P_array, Y_matrix, Mask_matrix, y_average2,
         cost += residual_sum/ y_average2[i]
         
         P_modello = K_rad * (T**4) + K_cond * (T - 300.0)
-        cost += 120 * ((P_modello - P_target) / P_target)**2
+        cost += 300 * ((P_modello - P_target) / P_target)**2
 
     return cost
 
@@ -138,7 +138,8 @@ for percorso in args.spectra:
         y_raw_list.append(df["Intensity"].values)
         P_lista.append(diz_p[nome_file])
         file_validi.append(nome_file)
-        T_lista.append(interpolate_temperature(tabella_TR, r_calc))
+        #T_lista.append(interpolate_temperature(tabella_TR, r_calc)) WRONG
+        T_lista.append((r_calc/12.8 - 1.0)/0.0045 + 300.0) # Formula empirica per stimare T da R
     except Exception as e:
         print(f"Salto file {nome_file}: {e}")
 
@@ -180,7 +181,7 @@ planck_factor2 = (h * c_vel) / (lam_meters * kB)
 # =============================================================================
 # COSTRUZIONE GEOMETRICA DEL FILTRO ADATTIVO E OTTIMIZZAZIONE
 # =============================================================================
-N_SIGMOIDI = 9
+N_SIGMOIDI = 12
 centri_dinamici = np.linspace(wl_assoluto_min + 3, wl_assoluto_max - 3, N_SIGMOIDI)
 
 p0_sigmoide = []
@@ -195,7 +196,7 @@ result = minimize(
     stima_iniziale, 
     args=(P_array, Y_matrix, Mask_matrix, y_average2, planck_factor1, planck_factor2, x_shared, N_SIGMOIDI), 
     method='Powell',
-    options={'maxfev': 150000, 'maxiter': 150000}
+    options={'maxfev': 150000, 'maxiter': 150000, 'xtol': 1e-17, 'ftol': 1e-17}
 )
 
 # =============================================================================
